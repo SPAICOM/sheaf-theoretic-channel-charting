@@ -18,12 +18,13 @@ from typing import Any
 import deepmimo as dm
 import lightning as L
 import numpy as np
-
-# from lightning.pytorch.utilities.combined_loader import CombinedLoader
+import torch
+from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from omegaconf import DictConfig, OmegaConf
+from scipy.spatial import cKDTree as KDTree
 from torch.utils.data import DataLoader
 
-from .dataset import TrajectoryCSIDataset
+from .dataset import SharedTrajectoryCSIDataset, TrajectoryCSIDataset
 
 
 def _merge_defaults(
@@ -113,15 +114,17 @@ class CSIDataModule(L.LightningDataModule):
         'num_users': 200,
         'T_min': 20,
         'T_max': 60,
+        'z_min': None,
+        'z_max': None,
         'pair_mode': 'triplet',  # "triplet" or "contrastive"
-        'window': 3,
+        'in_window': 3,
+        'out_window': 3,
+        'bias_sampling': False,
         'include_same_user_outside_window': False,
         'p_positive': 0.5,  # for contrastive
         'train_seed': 27,
         'test_seed': 42,
         'val_seed': 123,
-        'train_split': 0.8,
-        'val_split': 0.2,
     }
 
     def __init__(
@@ -142,18 +145,22 @@ class CSIDataModule(L.LightningDataModule):
         # Merge user configuration with defaults
         self.cfg = _merge_defaults(self.DEFAULTS, dataset_cfg)
 
+        # Casting
+        self.in_window = int(self.cfg.in_window)
+        self.out_window = int(self.cfg.out_window)
+        self.bias_sampling = bool(self.cfg.bias_sampling)
+        self.z_min = float(self.cfg.z_min)
+        self.z_max = float(self.cfg.z_max)
+
         # Dataset placeholders (initialized during setup)
         self.train_dataset = None
         self.test_dataset = None
         self.val_dataset = None
         self.n_agents = None
 
-        # Basic validation of split parameters
-        assert 0 <= self.cfg['train_split'] <= 1, (
-            'The "train_split" must be between 0 and 1.'
-        )
-        assert 0 <= self.cfg['val_split'] <= 1, (
-            'The "val_split" must be between 0 and 1.'
+        # Assertions
+        assert self.out_window > self.in_window, (
+            '"out_window" must always be grater than "in_window"'
         )
 
     def prepare_data(self) -> None:
@@ -205,6 +212,7 @@ class CSIDataModule(L.LightningDataModule):
         np.ndarray
             Selected XY coordinate (2,).
         """
+        # TODO self.H_users is not available
         if self.bias_sampling:
             power = np.linalg.norm(
                 self.H_users.reshape(len(self.H_users), -1), axis=1
@@ -235,46 +243,54 @@ class CSIDataModule(L.LightningDataModule):
         np.ndarray
             Array of RX indices representing the trajectory.
         """
-        if kind == 'linear':
-            start = self._rand_anchor_xy()
-            L = float(self.rng.uniform(*self.linear_len))
-            ang = float(self.rng.uniform(0, 2 * np.pi))
-            end = start + L * np.array([np.cos(ang), np.sin(ang)])
-            s = np.linspace(0.0, 1.0, T)
-            xy = start * (1 - s)[:, None] + end * s[:, None]
+        match kind:
+            case 'linear':
+                start = self._rand_anchor_xy()
+                L = float(self.rng.uniform(*self.linear_len))
+                ang = float(self.rng.uniform(0, 2 * np.pi))
+                end = start + L * np.array([np.cos(ang), np.sin(ang)])
+                s = np.linspace(0.0, 1.0, T)
+                xy = start * (1 - s)[:, None] + end * s[:, None]
+                xy = self._snap(xy)
 
-        if kind == 'circular':
-            center = self._rand_anchor_xy()
-            r = float(self.rng.uniform(*self.circle_r))
-            phase = float(self.rng.uniform(0, 2 * np.pi))
-            ang = np.linspace(0.0, 2 * np.pi, T, endpoint=False) + phase
-            xy = np.stack(
-                [center[0] + r * np.cos(ang), center[1] + r * np.sin(ang)],
-                axis=1,
-            )
+            case 'circular':
+                center = self._rand_anchor_xy()
+                r = float(self.rng.uniform(*self.circle_r))
+                phase = float(self.rng.uniform(0, 2 * np.pi))
+                ang = np.linspace(0.0, 2 * np.pi, T, endpoint=False) + phase
+                xy = np.stack(
+                    [center[0] + r * np.cos(ang), center[1] + r * np.sin(ang)],
+                    axis=1,
+                )
+                xy = self._snap(xy)
 
-        if kind == 'random':
-            xy = np.empty((T, 2), dtype=np.float64)
-            xy[0] = self._rand_anchor_xy()
-            prev_dir = None
-            for t in range(1, T):
-                step = float(self.rng.uniform(*self.random_step))
-                if (
-                    prev_dir is None
-                    or self.rng.random() > self.random_keep_dir
-                ):
-                    ang = float(self.rng.uniform(0, 2 * np.pi))
-                else:
-                    ang = float(
-                        np.arctan2(prev_dir[1], prev_dir[0])
-                        + self.rng.normal(0, 0.5)
-                    )
-                d = np.array([np.cos(ang), np.sin(ang)])
-                xy[t] = self._snap(xy[t - 1] + step * d)
-                prev_dir = d
-            return xy
+            case 'random':
+                xy = np.empty((T, 2), dtype=np.float64)
+                xy[0] = self._rand_anchor_xy()
+                prev_dir = None
+                for t in range(1, T):
+                    step = float(self.rng.uniform(*self.random_step))
+                    if (
+                        prev_dir is None
+                        or self.rng.random() > self.random_keep_dir
+                    ):
+                        ang = float(self.rng.uniform(0, 2 * np.pi))
+                    else:
+                        ang = float(
+                            np.arctan2(prev_dir[1], prev_dir[0])
+                            + self.rng.normal(0, 0.5)
+                        )
+                    d = np.array([np.cos(ang), np.sin(ang)])
+                    xy[t] = self._snap(xy[t - 1] + step * d)
+                    prev_dir = d
 
-        return self._snap(xy)
+            case _:
+                raise RuntimeError(
+                    'The passed "kind" is not supported.'
+                    'Chose between {"linear", "circular", "random"}.'
+                )
+
+        return xy
 
     # ----------------- CSI helpers -----------------
     def _H_from_global_index(
@@ -424,19 +440,28 @@ class CSIDataModule(L.LightningDataModule):
         # Channel computation arguments
         ch_kwargs = self.cfg.get('compute_channels') or {}
 
-        self.n_agents = len(self.ds) if isinstance(ds, (list, tuple)) else 1
+        self.n_agents = (
+            len(self.ds) if isinstance(self.ds, (list, tuple)) else 1
+        )
 
         self.rx_pos_all = (
-            self.ds[0].rx_pos if isinstance(self.ds, (list, tuple)) else ds.rx_pos
+            self.ds[0].rx_pos
+            if isinstance(self.ds, (list, tuple))
+            else self.ds.rx_pos
         )
         self.valid_rx_pos = {}
         union_mask = np.zeros_like(self.rx_pos_all, dtype=bool)
 
         for base_station in self.ds:
+            mask = np.ones(len(self.rx_pos_all), dtype=bool)
+
             base_station.compute_channels(**ch_kwargs)
+
+            # ------- Filter coverage area basestation -------
             bs_pos = base_station.bs_pos
 
             d = np.linalg.norm(self.rx_pos_all - bs_pos, axis=1)
+
             if self.cfg.r_min is not None:
                 mask &= d >= float(self.cfg.r_min)
 
@@ -449,6 +474,12 @@ class CSIDataModule(L.LightningDataModule):
                 r_max = self.cfg.coverage_area * min(xmax - xmin, ymax - ymin)
 
             mask &= d <= float(r_max)
+
+            # ------- Filter in the hight -------
+            if self.z_min is not None:
+                mask &= self.rx_pos_all[:, 2] >= float(self.z_min)
+            if self.z_max is not None:
+                mask &= self.rx_pos_all[:, 2] <= float(self.z_max)
 
             self.bs_coords[base_station] = {
                 'rx_pos': self.rx_pos_all[np.where(mask)[0]],
@@ -464,22 +495,16 @@ class CSIDataModule(L.LightningDataModule):
 
         # Compute feature dimensionality
         # Each channel is complex -> we convert to real/imag pairs
-        per_sample_complex = int(np.prod(ch.shape[1:]))
-        self.feature_dim = 2 * per_sample_complex
+        # per_sample_complex = int(np.prod(ch.shape[1:]))
+        # self.feature_dim = 2 * per_sample_complex
 
         # ---------------------------------------------------------------
         #                Compute dataset split sizes
         # ---------------------------------------------------------------
 
-        train_num_users = int(
-            int(self.cfg['train_num_users'])
-        )
-        test_num_users = int(
-            int(self.cfg['test_num_users'])
-        )
-        val_num_users = int(
-            int(self.cfg['val_num_users'])
-        )
+        train_num_users = int(int(self.cfg['train_num_users']))
+        test_num_users = int(int(self.cfg['test_num_users']))
+        val_num_users = int(int(self.cfg['val_num_users']))
 
         # ---------------------------------------------------------------
         #                   Create the Datasets
@@ -513,13 +538,13 @@ class CSIDataModule(L.LightningDataModule):
         """
 
         loaders = {}
-        for base_station in self.train_local_dataset.keys():
+        for base_station in self.train_local_dataset:
             loaders[base_station] = DataLoader(
                 self.train_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
             )
 
-        for bs_1, bs_2 in self.train_shared_dataset.keys():
+        for bs_1, bs_2 in self.train_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
                 self.train_shared_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
@@ -537,13 +562,13 @@ class CSIDataModule(L.LightningDataModule):
             DataLoader used during testing/evaluation.
         """
         loaders = {}
-        for base_station in self.test_local_dataset.keys():
+        for base_station in self.test_local_dataset:
             loaders[base_station] = DataLoader(
                 self.test_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
             )
 
-        for bs_1, bs_2 in self.test_shared_dataset.keys():
+        for bs_1, bs_2 in self.test_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
                 self.test_shared_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
@@ -561,13 +586,13 @@ class CSIDataModule(L.LightningDataModule):
             DataLoader used during validation.
         """
         loaders = {}
-        for base_station in self.val_local_dataset.keys():
+        for base_station in self.val_local_dataset:
             loaders[base_station] = DataLoader(
                 self.val_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
             )
 
-        for bs_1, bs_2 in self.val_shared_dataset.keys():
+        for bs_1, bs_2 in self.val_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
                 self.val_shared_dataset[base_station],
                 batch_size=self.cfg['batch_size'],

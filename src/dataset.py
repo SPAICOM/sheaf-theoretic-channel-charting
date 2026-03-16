@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from scipy.spatial import cKDTree as KDTree
 from torch.utils.data import Dataset
 
 
@@ -138,6 +137,7 @@ class TrajectoryCSIDataset(Dataset):
         mask: np.ndarray,
         rx_pos: np.ndarray,
         H_users: np.ndarray,
+        pair_mode: str = 'triplet',
         # bs_pos: np.ndarray = None,
         # num_users: int = 1,
         # T_min: int = 32,
@@ -158,92 +158,19 @@ class TrajectoryCSIDataset(Dataset):
         # pair_mode: str = 'triplet',  # "triplet" or "contrastive"
         # in_window: int = 3,
         # out_window: int = 6,
-        # p_positive: float = 0.5,  # only for contrastive
+        p_positive: float = 0.5,  # only for contrastive
     ):
         super().__init__()
 
         # Siamese sampling configuration
         assert pair_mode in ('triplet', 'contrastive')
         self.pair_mode = pair_mode
-        self.in_window = int(in_window)
-        self.out_window = int(out_window)
-        assert out_window > in_window, (
-            '"out_window" must always be grater than "in_window"'
-        )
         self.p_positive = float(p_positive)
-        self.bias_sampling = bool(bias_sampling)
-
-        self.rng = np.random.default_rng(seed)
-
-        # Convert RX positions to array, ensure 3D coordinates
-        rx_pos = np.asarray(rx_pos, dtype=np.float64)
-        if rx_pos.shape[1] == 2:
-            rx_pos = np.c_[rx_pos, np.zeros((rx_pos.shape[0], 1))]
-        self.rx_pos_all = rx_pos
-
-        # Convert CSI to array and validate dimensions
-        H_users = np.asarray(H_users)
-        if H_users.shape[0] != rx_pos.shape[0]:
-            raise ValueError('H_users first dim must match rx_pos first dim')
-        self.H_users = H_users
-
-        # Filter candidate RX points (optional)
-        mask = np.ones(len(rx_pos), dtype=bool)
-        if z_min is not None:
-            mask &= rx_pos[:, 2] >= float(z_min)
-        if z_max is not None:
-            mask &= rx_pos[:, 2] <= float(z_max)
-
-        # distance-to-BS filtering
-        bs_pos = np.asarray(bs_pos)
-        if bs_pos.shape[0] == 2:
-            bs_pos = np.r_[bs_pos, 0.0]
-
-        d = np.linalg.norm(rx_pos - bs_pos, axis=1)
-
-        if r_min is not None:
-            mask &= d >= float(r_min)
-
-        assert coverage_area >= 0 and coverage_area <= 1, (
-            '"coverage_area" must be between 0 and 1 for a BS.'
-        )
-        if r_max is None:
-            xmin, ymin = rx_pos[:, :2].min(axis=0)
-            xmax, ymax = rx_pos[:, :2].max(axis=0)
-            r_max = coverage_area * min(xmax - xmin, ymax - ymin)
-
-        mask &= d <= float(r_max)
-
-        self.valid_idxs = np.where(mask)[0]
-        if len(self.valid_idxs) < 10:
-            raise ValueError('Too few valid RX points after filtering.')
-        self.rx_pos = rx_pos[self.valid_idxs]
-        self.rx_xy = self.rx_pos[:, :2]
-        self.kdtree = KDTree(self.rx_xy)
-
-        self.num_users = int(num_users)
-        self.T_min = int(T_min)
-        self.T_max = int(T_max)
-        if self.T_min < 2 or self.T_max < self.T_min:
-            raise ValueError('Bad T_min/T_max')
-        self.kinds = ('linear', 'circular', 'random')
-        self.trajectory_kind = trajectory_kind
-        assert (self.trajectory_kind in self.kinds) or (
-            self.trajectory_kind is None
-        ), (
-            f'Trajectory kind "{self.trajectory_kind}" not available,'
-            + 'possible values: ["linear", "circular", "random", None]'
-        )
-
-        self.linear_len = linear_len
-        self.circle_r = circle_r
-        self.random_step = random_step
-        self.random_keep_dir = float(random_keep_dir)
 
         # ---- Build variable-length trajectories once ----
         self.idx_to_neg_pos = idx_to_neg_pos
         self.valid_idxs = np.where(mask)[0]
-        for user_id, idx in self.idx_to_neg_pos.keys():
+        for user_id, idx in self.idx_to_neg_pos:
             if idx not in self.valid_idxs:
                 del self.idx_to_neg_pos[(user_id, idx)]
 
@@ -278,7 +205,8 @@ class TrajectoryCSIDataset(Dataset):
         #                 np.concat(
         #                     [
         #                         np.arange(
-        #                             idx - self.out_window, idx - self.in_window
+        #                             idx - self.out_window,
+        #                             idx - self.in_window,
         #                         ),
         #                         np.arange(
         #                             idx + self.in_window + 1,
@@ -536,6 +464,8 @@ class SharedTrajectoryCSIDataset(Dataset):
         shared_pos: np.ndarray,
         channels_bs_1: np.ndarray,
         channels_bs_2: np.ndarray,
+        idx_bs_1: int,
+        idx_bs_2: int,
     ):
         super().__init__()
 
