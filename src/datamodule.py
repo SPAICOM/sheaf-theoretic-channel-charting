@@ -174,6 +174,225 @@ class CSIDataModule(L.LightningDataModule):
 
         return None
 
+    # ----------------- Snapping helpers -----------------
+    def _snap(
+        self,
+        xy: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Snap 2D coordinates to the nearest valid RX index.
+
+        Parameters
+        ----------
+        xy : np.ndarray
+            XY coordinates of shape (2,) or (N,2).
+
+        Returns
+        -------
+        np.ndarray
+            Indices of nearest valid RX positions.
+        """
+        _, idx_local = self.kdtree.query(xy, k=1)
+        return self.valid_idxs[idx_local].astype(np.int64)
+
+    # ----------------- Trajectory generators -----------------
+    def _rand_anchor_xy(self) -> np.ndarray:
+        """
+        Pick a random RX XY coordinate to serve as a trajectory anchor.
+
+        Returns
+        -------
+        np.ndarray
+            Selected XY coordinate (2,).
+        """
+        if self.bias_sampling:
+            power = np.linalg.norm(
+                self.H_users.reshape(len(self.H_users), -1), axis=1
+            )
+            prob = power / power.sum()
+            idx = self.rng.choice(len(self.rx_pos_all_masked), p=prob)
+        else:
+            idx = int(self.rng.integers(0, len(self.rx_pos_all_masked)))
+        return self.rx_pos_all_masked[idx].copy()
+
+    def _generate_one(
+        self,
+        kind: str | None,
+        T: int,
+    ) -> np.ndarray:
+        """
+        Generate a trajectory of length T of the specified kind.
+
+        Parameters
+        ----------
+        kind : str
+            One of 'linear', 'circular', or 'random'.
+        T : int
+            Trajectory length.
+
+        Returns
+        -------
+        np.ndarray
+            Array of RX indices representing the trajectory.
+        """
+        if kind == 'linear':
+            start = self._rand_anchor_xy()
+            L = float(self.rng.uniform(*self.linear_len))
+            ang = float(self.rng.uniform(0, 2 * np.pi))
+            end = start + L * np.array([np.cos(ang), np.sin(ang)])
+            s = np.linspace(0.0, 1.0, T)
+            xy = start * (1 - s)[:, None] + end * s[:, None]
+
+        if kind == 'circular':
+            center = self._rand_anchor_xy()
+            r = float(self.rng.uniform(*self.circle_r))
+            phase = float(self.rng.uniform(0, 2 * np.pi))
+            ang = np.linspace(0.0, 2 * np.pi, T, endpoint=False) + phase
+            xy = np.stack(
+                [center[0] + r * np.cos(ang), center[1] + r * np.sin(ang)],
+                axis=1,
+            )
+
+        if kind == 'random':
+            xy = np.empty((T, 2), dtype=np.float64)
+            xy[0] = self._rand_anchor_xy()
+            prev_dir = None
+            for t in range(1, T):
+                step = float(self.rng.uniform(*self.random_step))
+                if (
+                    prev_dir is None
+                    or self.rng.random() > self.random_keep_dir
+                ):
+                    ang = float(self.rng.uniform(0, 2 * np.pi))
+                else:
+                    ang = float(
+                        np.arctan2(prev_dir[1], prev_dir[0])
+                        + self.rng.normal(0, 0.5)
+                    )
+                d = np.array([np.cos(ang), np.sin(ang)])
+                xy[t] = self._snap(xy[t - 1] + step * d)
+                prev_dir = d
+            return xy
+
+        return self._snap(xy)
+
+    # ----------------- CSI helpers -----------------
+    def _H_from_global_index(
+        self,
+        gidx: int,
+    ) -> torch.Tensor:
+        """
+        Return the CSI tensor for the given global index.
+
+        Parameters
+        ----------
+        gidx : int
+            Global index into the flattened trajectory dataset.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex CSI tensor for the corresponding RX location.
+        """
+        return torch.from_numpy(self.H_users[gidx])  # complex tensor
+
+    def _pick_one(self, idxs: np.ndarray) -> int:
+        """
+        Randomly select one index from a list of indices.
+
+        Parameters
+        ----------
+        idxs : np.ndarray
+            Array of candidate indices.
+
+        Returns
+        -------
+        int
+            Randomly selected index, or -1 if input is empty.
+        """
+        if idxs is None or len(idxs) == 0:
+            return -1
+        return int(idxs[int(self.rng.integers(0, len(idxs)))])
+
+    def _shared_gen(self, num_users) -> None:
+        for user_id in range(num_users):
+            # Random trajectory length
+            T = int(self.rng.integers(self.T_min, self.T_max + 1))
+
+            # Randomly pick trajectory kind
+            kind = (
+                self.kinds[int(self.rng.integers(0, len(self.kinds)))]
+                if self.trajectory_kind is None
+                else self.trajectory_kind
+            )
+
+            # Generate trajectory of RX indices
+            rx_idxs = self._generate_one(kind, T)
+            max_idx = np.max(rx_idxs)
+            min_idx = np.min(rx_idxs)
+            for idx in rx_idxs:
+                min_point = min_idx + self.out_window
+                max_point = max_idx - self.out_window
+                if idx > min_point and idx < max_point:
+                    pos = np.clip(
+                        np.arange(
+                            idx - self.in_window, idx + self.in_window + 1
+                        ),
+                        a_min=0,
+                        a_max=max_idx,
+                    )
+                    pos = pos[pos != idx]
+                    neg = np.clip(
+                        np.concat(
+                            [
+                                np.arange(
+                                    idx - self.out_window, idx - self.in_window
+                                ),
+                                np.arange(
+                                    idx + self.in_window + 1,
+                                    idx + self.out_window + 1,
+                                ),
+                            ]
+                        ),
+                        a_min=0,
+                        a_max=max_idx,
+                    )
+                    neg = neg[neg != idx]
+                    self.idx_to_neg_pos[(user_id, idx)] = {
+                        'pos': pos,
+                        'neg': neg,
+                    }
+
+        local_datasets = {}
+        shared_datasets = {}
+
+        for base_station, _ in enumerate(self.ds):
+            local_datasets[base_station] = TrajectoryCSIDataset(
+                idx_to_neg_pos=self.idx_to_neg_pos,
+                mask=self.bs_coords[base_station]['mask'],
+                rx_pos=self.bs_coords[base_station]['rx_pos'],
+                H_users=self.bs_coords[base_station]['channels'],
+            )
+
+        for bs_1, bs_2 in self.edge_set:
+            shared_mask = (
+                self.bs_coords[bs_1]['mask'] & self.bs_coords[bs_2]['mask']
+            )
+            shared_pos = self.rx_pos_all[np.where(shared_mask)[0]]
+            channels_bs_1 = self.ds[bs_1].channels[shared_mask]
+            channels_bs_2 = self.ds[bs_2].channels[shared_mask]
+
+            shared_datasets[(bs_1, bs_2)] = SharedTrajectoryCSIDataset(
+                idx_bs_1=bs_1,
+                idx_bs_2=bs_2,
+                shared_mask=shared_mask,
+                shared_pos=shared_pos,
+                channels_bs_1=channels_bs_1,
+                channels_bs_2=channels_bs_2,
+            )
+
+        return local_datasets, shared_datasets
+
     def setup(
         self,
         stage: str | None = None,
@@ -200,20 +419,20 @@ class CSIDataModule(L.LightningDataModule):
         """
 
         # Load DeepMIMO scenario
-        ds = dm.load(self.cfg['scenario'])
+        self.ds = dm.load(self.cfg['scenario'])
 
         # Channel computation arguments
         ch_kwargs = self.cfg.get('compute_channels') or {}
 
-        self.n_agents = len(ds) if isinstance(ds, (list, tuple)) else 1
+        self.n_agents = len(self.ds) if isinstance(ds, (list, tuple)) else 1
 
         self.rx_pos_all = (
-            ds[0].rx_pos if isinstance(ds, (list, tuple)) else ds.rx_pos
+            self.ds[0].rx_pos if isinstance(self.ds, (list, tuple)) else ds.rx_pos
         )
         self.valid_rx_pos = {}
         union_mask = np.zeros_like(self.rx_pos_all, dtype=bool)
 
-        for base_station in ds:
+        for base_station in self.ds:
             base_station.compute_channels(**ch_kwargs)
             bs_pos = base_station.bs_pos
 
@@ -234,26 +453,14 @@ class CSIDataModule(L.LightningDataModule):
             self.bs_coords[base_station] = {
                 'rx_pos': self.rx_pos_all[np.where(mask)[0]],
                 'mask': mask,
+                'channels': base_station.channels[np.where(mask)[0]],
             }
             union_mask |= mask
 
-        # Some scenarios return a list of datasets
-        # (e.g., multiple base stations)
-        ds0 = ds[0] if isinstance(ds, (list, tuple)) else ds
-
-        # Compute channel matrices
-        try:
-            ds0.compute_channels(**ch_kwargs)
-        except TypeError:
-            # Fallback if the scenario does not accept arguments
-            ds0.compute_channels()
-
-        ch = ds0.channels
-
-        # Ensure channel computation succeeded
-        assert ch is not None, (
-            'DeepMIMO: ds0.channels is None after compute_channels().'
-        )
+        self.valid_idxs = np.where(union_mask)[0]
+        self.rx_pos_all_masked = self.rx_pos_all[self.valid_idxs]
+        self.rx_pos_all_masked = self.rx_pos_all_masked[:, :2]
+        self.kdtree = KDTree(self.rx_pos_all_masked)
 
         # Compute feature dimensionality
         # Each channel is complex -> we convert to real/imag pairs
@@ -265,13 +472,13 @@ class CSIDataModule(L.LightningDataModule):
         # ---------------------------------------------------------------
 
         train_num_users = int(
-            int(self.cfg['num_users']) * (self.cfg['train_split'])
+            int(self.cfg['train_num_users'])
         )
         test_num_users = int(
-            int(self.cfg['num_users']) * (1 - self.cfg['train_split'])
+            int(self.cfg['test_num_users'])
         )
         val_num_users = int(
-            int(self.cfg['num_users']) * (self.cfg['val_split'])
+            int(self.cfg['val_num_users'])
         )
 
         # ---------------------------------------------------------------
@@ -279,42 +486,18 @@ class CSIDataModule(L.LightningDataModule):
         # ---------------------------------------------------------------
 
         # Training dataset
-        self.train_dataset = TrajectoryCSIDataset(
-            rx_pos=ds0.rx_pos,
-            H_users=ds0.channels,
-            bs_pos=ds0.bs_pos,
-            num_users=train_num_users,
-            T_min=int(self.cfg['T_min']),
-            T_max=int(self.cfg['T_max']),
-            seed=int(self.cfg['train_seed']),
-            pair_mode=str(self.cfg['pair_mode']),
-            p_positive=float(self.cfg['p_positive']),
+        self.train_local_dataset, self.train_shared_dataset = self._shared_gen(
+            train_num_users
         )
 
         # Test dataset
-        self.test_dataset = TrajectoryCSIDataset(
-            rx_pos=ds0.rx_pos,
-            H_users=ds0.channels,
-            bs_pos=ds0.bs_pos,
-            num_users=test_num_users,
-            T_min=int(self.cfg['T_min']),
-            T_max=int(self.cfg['T_max']),
-            seed=int(self.cfg['test_seed']),
-            pair_mode=str(self.cfg['pair_mode']),
-            p_positive=float(self.cfg['p_positive']),
+        self.test_local_dataset, self.test_shared_dataset = self._shared_gen(
+            test_num_users
         )
 
         # Validation dataset
-        self.val_dataset = TrajectoryCSIDataset(
-            rx_pos=ds0.rx_pos,
-            H_users=ds0.channels,
-            bs_pos=ds0.bs_pos,
-            num_users=val_num_users,
-            T_min=int(self.cfg['T_min']),
-            T_max=int(self.cfg['T_max']),
-            seed=int(self.cfg['val_seed']),
-            pair_mode=str(self.cfg['pair_mode']),
-            p_positive=float(self.cfg['p_positive']),
+        self.val_local_dataset, self.val_shared_dataset = self._shared_gen(
+            val_num_users
         )
 
         return None
@@ -328,20 +511,21 @@ class CSIDataModule(L.LightningDataModule):
         DataLoader
             PyTorch DataLoader used during model training.
         """
-        # loaders = {
-        #     "model_a": DataLoader(ds_a, batch_size=32),
-        #     "model_b": DataLoader(ds_b, batch_size=32),
-        #     "shared_ab": DataLoader(ds_shared_ab, batch_size=32),
-        # }
 
-        # return CombinedLoader(loaders, mode="max_size_cycle")
-        return DataLoader(
-            self.train_dataset,
-            batch_size=int(self.cfg['batch_size']),
-            shuffle=bool(self.cfg['shuffle']),
-            num_workers=int(self.cfg['num_workers']),
-            pin_memory=bool(self.cfg['pin_memory']),
-        )
+        loaders = {}
+        for base_station in self.train_local_dataset.keys():
+            loaders[base_station] = DataLoader(
+                self.train_local_dataset[base_station],
+                batch_size=self.cfg['batch_size'],
+            )
+
+        for bs_1, bs_2 in self.train_shared_dataset.keys():
+            loaders[(bs_1, bs_2)] = DataLoader(
+                self.train_shared_dataset[base_station],
+                batch_size=self.cfg['batch_size'],
+            )
+
+        return CombinedLoader(loaders, mode='max_size_cycle')
 
     def test_dataloader(self) -> DataLoader:
         """
@@ -352,13 +536,20 @@ class CSIDataModule(L.LightningDataModule):
         DataLoader
             DataLoader used during testing/evaluation.
         """
-        return DataLoader(
-            self.test_dataset,
-            batch_size=int(self.cfg['batch_size']),
-            shuffle=False,
-            num_workers=int(self.cfg['num_workers']),
-            pin_memory=bool(self.cfg['pin_memory']),
-        )
+        loaders = {}
+        for base_station in self.test_local_dataset.keys():
+            loaders[base_station] = DataLoader(
+                self.test_local_dataset[base_station],
+                batch_size=self.cfg['batch_size'],
+            )
+
+        for bs_1, bs_2 in self.test_shared_dataset.keys():
+            loaders[(bs_1, bs_2)] = DataLoader(
+                self.test_shared_dataset[base_station],
+                batch_size=self.cfg['batch_size'],
+            )
+
+        return CombinedLoader(loaders, mode='max_size_cycle')
 
     def val_dataloader(self) -> DataLoader:
         """
@@ -369,10 +560,17 @@ class CSIDataModule(L.LightningDataModule):
         DataLoader
             DataLoader used during validation.
         """
-        return DataLoader(
-            self.val_dataset,
-            batch_size=int(self.cfg['batch_size']),
-            shuffle=False,
-            num_workers=int(self.cfg['num_workers']),
-            pin_memory=bool(self.cfg['pin_memory']),
-        )
+        loaders = {}
+        for base_station in self.val_local_dataset.keys():
+            loaders[base_station] = DataLoader(
+                self.val_local_dataset[base_station],
+                batch_size=self.cfg['batch_size'],
+            )
+
+        for bs_1, bs_2 in self.val_shared_dataset.keys():
+            loaders[(bs_1, bs_2)] = DataLoader(
+                self.val_shared_dataset[base_station],
+                batch_size=self.cfg['batch_size'],
+            )
+
+        return CombinedLoader(loaders, mode='max_size_cycle')

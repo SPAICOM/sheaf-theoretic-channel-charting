@@ -5,27 +5,87 @@ from torch.utils.data import Dataset
 
 
 def csi_to_realvec(
-    H: torch.Tensor,
-    c: float = 1e7,
-) -> torch.Tensor:
+    H: torch.Tensor, lag_step: int = 4, max_lag: int = 60, eps: float = 1e-12
+):
     """
-    Convert a complex CSI tensor into a real-valued vector.
+    Preprocess CSI tensor following the pipeline in
+    'Triplet-Based Wireless Channel Charting'.
 
     Parameters
     ----------
     H : torch.Tensor
-        Complex-valued CSI tensor, shape (...).
+        Complex CSI tensor of shape (R, T, F)
+        R = receiver antennas
+        T = transmitter antennas
+        F = frequency subcarriers
+
+    lag_step : int
+        Step between autocorrelation lags (default 4)
+
+    max_lag : int
+        Maximum lag (default 60)
+
+    eps : float
+        Small constant for numerical stability in log
 
     Returns
     -------
-    torch.Tensor
-        Real-valued vector, shape (D,), where D = 2 * product of H dims
-        except the first (sample) dimension.
+    features : np.ndarray
+        Flattened real feature vector
     """
-    # Flatten complex tensor into real vector (real + imag)
-    H = H * torch.tensor(c)
-    x = torch.view_as_real(H).reshape(-1).float()
-    return x
+    device = H.device
+    H = H.detach().cpu().numpy()
+    R, T, F = H.shape
+
+    # 2 dimensional FT (from RT domain to beam angular domain)
+    H_beam = np.fft.fft2(H, axes=(0, 1))  # shape: (R, T, F)
+
+    # Autocorrelation in frequency
+    lags = np.arange(0, max_lag + 1, lag_step)
+    num_lags = len(lags)
+
+    r = np.zeros((R, T, num_lags), dtype=np.complex128)
+
+    for i, lag in enumerate(lags):
+        if lag == 0:
+            r[:, :, i] = np.sum(H_beam * np.conj(H_beam), axis=2)
+        else:
+            r[:, :, i] = np.sum(
+                H_beam[:, :, :-lag] * np.conj(H_beam[:, :, lag:]), axis=2
+            )
+
+    # Log scaling
+    r = np.log(np.abs(r) + eps)
+
+    # Flatten to vector
+    features = r.reshape(-1)
+    features = torch.from_numpy(features).to(device)
+
+    return features
+
+
+# def csi_to_realvec(
+#     H: torch.Tensor,
+#     c: float = 1e7,
+# ) -> torch.Tensor:
+#     """
+#     Convert a complex CSI tensor into a real-valued vector.
+
+#     Parameters
+#     ----------
+#     H : torch.Tensor
+#         Complex-valued CSI tensor, shape (...).
+
+#     Returns
+#     -------
+#     torch.Tensor
+#         Real-valued vector, shape (D,), where D = 2 * product of H dims
+#         except the first (sample) dimension.
+#     """
+#     # Flatten complex tensor into real vector (real + imag)
+#     H = H * torch.tensor(c)
+#     x = torch.view_as_real(H).reshape(-1).float()
+#     return x
 
 
 class TrajectoryCSIDataset(Dataset):
@@ -74,29 +134,31 @@ class TrajectoryCSIDataset(Dataset):
 
     def __init__(
         self,
+        idx_to_neg_pos: dict,
+        mask: np.ndarray,
         rx_pos: np.ndarray,
         H_users: np.ndarray,
-        bs_pos: np.ndarray,
-        num_users: int = 1,
-        T_min: int = 32,
-        T_max: int = 128,
-        trajectory_kind: str | None = None,
-        linear_len=(20.0, 120.0),
-        circle_r=(10.0, 60.0),
-        random_step=(1.0, 5.0),
-        random_keep_dir=0.7,
-        z_min: float | None = None,
-        z_max: float | None = None,
-        r_min: float | None = None,
-        r_max: float | None = None,
-        coverage_area: float = 0.2,
-        bias_sampling: bool = False,
-        seed: int = 0,
-        # --- Siamese sampling controls ---
-        pair_mode: str = 'triplet',  # "triplet" or "contrastive"
-        in_window: int = 3,
-        out_window: int = 6,
-        p_positive: float = 0.5,  # only for contrastive
+        # bs_pos: np.ndarray = None,
+        # num_users: int = 1,
+        # T_min: int = 32,
+        # T_max: int = 128,
+        # trajectory_kind: str | None = None,
+        # linear_len=(20.0, 120.0),
+        # circle_r=(10.0, 60.0),
+        # random_step=(1.0, 5.0),
+        # random_keep_dir=0.7,
+        # z_min: float | None = None,
+        # z_max: float | None = None,
+        # r_min: float | None = None,
+        # r_max: float | None = None,
+        # coverage_area: float = 0.2,
+        # bias_sampling: bool = False,
+        # seed: int = 0,
+        # # --- Siamese sampling controls ---
+        # pair_mode: str = 'triplet',  # "triplet" or "contrastive"
+        # in_window: int = 3,
+        # out_window: int = 6,
+        # p_positive: float = 0.5,  # only for contrastive
     ):
         super().__init__()
 
@@ -179,55 +241,59 @@ class TrajectoryCSIDataset(Dataset):
         self.random_keep_dir = float(random_keep_dir)
 
         # ---- Build variable-length trajectories once ----
-        self.idx_to_neg_pos = {}
+        self.idx_to_neg_pos = idx_to_neg_pos
+        self.valid_idxs = np.where(mask)[0]
+        for user_id, idx in self.idx_to_neg_pos.keys():
+            if idx not in self.valid_idxs:
+                del self.idx_to_neg_pos[(user_id, idx)]
 
-        for user_id in range(self.num_users):
-            # Random trajectory length
-            T = int(self.rng.integers(self.T_min, self.T_max + 1))
+        # for user_id in range(self.num_users):
+        #     # Random trajectory length
+        #     T = int(self.rng.integers(self.T_min, self.T_max + 1))
 
-            # Randomly pick trajectory kind
-            kind = (
-                self.kinds[int(self.rng.integers(0, len(self.kinds)))]
-                if self.trajectory_kind is None
-                else self.trajectory_kind
-            )
+        #     # Randomly pick trajectory kind
+        #     kind = (
+        #         self.kinds[int(self.rng.integers(0, len(self.kinds)))]
+        #         if self.trajectory_kind is None
+        #         else self.trajectory_kind
+        #     )
 
-            # Generate trajectory of RX indices
-            rx_idxs = self._generate_one(kind, T)
-            max_idx = np.max(rx_idxs)
-            min_idx = np.min(rx_idxs)
-            for idx in rx_idxs:
-                min_point = min_idx + self.out_window
-                max_point = max_idx - self.out_window
-                if idx > min_point and idx < max_point:
-                    pos = np.clip(
-                        np.arange(
-                            idx - self.in_window, idx + self.in_window + 1
-                        ),
-                        a_min=0,
-                        a_max=max_idx,
-                    )
-                    pos = pos[pos != idx]
-                    neg = np.clip(
-                        np.concat(
-                            [
-                                np.arange(
-                                    idx - self.out_window, idx - self.in_window
-                                ),
-                                np.arange(
-                                    idx + self.in_window + 1,
-                                    idx + self.out_window + 1,
-                                ),
-                            ]
-                        ),
-                        a_min=0,
-                        a_max=max_idx,
-                    )
-                    neg = neg[neg != idx]
-                    self.idx_to_neg_pos[(user_id, idx)] = {
-                        'pos': pos,
-                        'neg': neg,
-                    }
+        #     # Generate trajectory of RX indices
+        #     rx_idxs = self._generate_one(kind, T)
+        #     max_idx = np.max(rx_idxs)
+        #     min_idx = np.min(rx_idxs)
+        #     for idx in rx_idxs:
+        #         min_point = min_idx + self.out_window
+        #         max_point = max_idx - self.out_window
+        #         if idx > min_point and idx < max_point:
+        #             pos = np.clip(
+        #                 np.arange(
+        #                     idx - self.in_window, idx + self.in_window + 1
+        #                 ),
+        #                 a_min=0,
+        #                 a_max=max_idx,
+        #             )
+        #             pos = pos[pos != idx]
+        #             neg = np.clip(
+        #                 np.concat(
+        #                     [
+        #                         np.arange(
+        #                             idx - self.out_window, idx - self.in_window
+        #                         ),
+        #                         np.arange(
+        #                             idx + self.in_window + 1,
+        #                             idx + self.out_window + 1,
+        #                         ),
+        #                     ]
+        #                 ),
+        #                 a_min=0,
+        #                 a_max=max_idx,
+        #             )
+        #             neg = neg[neg != idx]
+        #             self.idx_to_neg_pos[(user_id, idx)] = {
+        #                 'pos': pos,
+        #                 'neg': neg,
+        #             }
 
     # ----------------- Snapping helpers -----------------
     def _snap(
@@ -392,9 +458,8 @@ class TrajectoryCSIDataset(Dataset):
             CSI vectors and label / placeholder.
         """
         # Anchor
-        H_A = self._H_from_global_index(index)
-
         id = list(self.idx_to_neg_pos.keys())[index]
+        H_A = self._H_from_global_index(id[1])
 
         pos_idxs = self.idx_to_neg_pos[id]['pos']
         neg_idxs = self.idx_to_neg_pos[id]['neg']
@@ -458,3 +523,57 @@ class TrajectoryCSIDataset(Dataset):
         # xA: [BS, d]
         # xP: [BS, n_pos, d]
         # xN: [BS, n_neg, d]
+
+
+class SharedTrajectoryCSIDataset(Dataset):
+    """
+    Dataset producing shared batches between bss for CSI trajectory learning.
+    """
+
+    def __init__(
+        self,
+        shared_mask: np.ndarray,
+        shared_pos: np.ndarray,
+        channels_bs_1: np.ndarray,
+        channels_bs_2: np.ndarray,
+    ):
+        super().__init__()
+
+        self.idx_bs_1 = idx_bs_1
+        self.idx_bs_2 = idx_bs_2
+
+        self.shared_mask = shared_mask
+        self.shared_pos = shared_pos
+
+        self.channels_bs_1 = channels_bs_1  # (num_points, R, T, F)
+        self.channels_bs_2 = channels_bs_2  # (num_points, R, T, F)
+
+    # ----------------- Dataset API -----------------
+    def __len__(self) -> int:
+        """
+        Return the total number of samples in the dataset.
+
+        Returns
+        -------
+        int
+            Total number of trajectory points across all users.
+        """
+        return self.channels_bs_1.shape[0]
+
+    def __getitem__(
+        self,
+        index: int,
+    ):
+        """
+        Return one Siamese sample depending on pair_mode.
+
+        Returns
+        -------
+        xA, xP, xN, y
+            CSI vectors and label / placeholder.
+        """
+        # Anchor retrieving
+        H_1 = csi_to_realvec(self.channels_bs_1[index])
+        H_2 = csi_to_realvec(self.channels_bs_2[index])
+
+        return H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
