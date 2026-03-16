@@ -17,9 +17,10 @@ from typing import Any
 
 import deepmimo as dm
 import lightning as L
+import matplotlib.pyplot as plt
 import numpy as np
-import torch
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
+from matplotlib.patches import Circle, Rectangle
 from omegaconf import DictConfig, OmegaConf
 from scipy.spatial import cKDTree as KDTree
 from torch.utils.data import DataLoader
@@ -111,15 +112,25 @@ class CSIDataModule(L.LightningDataModule):
         'shuffle': True,
         'pin_memory': True,
         'compute_channels': {},
-        'num_users': 200,
+        'train_num_users': 1,
+        'test_num_users': 1,
+        'val_num_users': 1,
         'T_min': 20,
         'T_max': 60,
+        'r_min': None,
+        'r_max': None,
         'z_min': None,
         'z_max': None,
+        'linear_len': (20.0, 120.0),
+        'circle_r': (10.0, 60.0),
+        'random_step': (1.0, 5.0),
+        'random_keep_dir': 0.7,
+        'trajectory_kind': 'full',
         'pair_mode': 'triplet',  # "triplet" or "contrastive"
         'in_window': 3,
-        'out_window': 3,
+        'out_window': 6,
         'bias_sampling': False,
+        'coverage_area': 0.2,
         'include_same_user_outside_window': False,
         'p_positive': 0.5,  # for contrastive
         'train_seed': 27,
@@ -130,6 +141,7 @@ class CSIDataModule(L.LightningDataModule):
     def __init__(
         self,
         dataset_cfg: DictConfig | dict[str, Any],
+        seed: int | None = None,
     ):
         """
         Initialize the CSIDataModule.
@@ -146,11 +158,21 @@ class CSIDataModule(L.LightningDataModule):
         self.cfg = _merge_defaults(self.DEFAULTS, dataset_cfg)
 
         # Casting
-        self.in_window = int(self.cfg.in_window)
-        self.out_window = int(self.cfg.out_window)
-        self.bias_sampling = bool(self.cfg.bias_sampling)
-        self.z_min = float(self.cfg.z_min)
-        self.z_max = float(self.cfg.z_max)
+        self.in_window = int(self.cfg['in_window'])
+        self.out_window = int(self.cfg['out_window'])
+        self.bias_sampling = bool(self.cfg['bias_sampling'])
+        self.z_min = self.cfg['z_min']
+        self.z_max = self.cfg['z_max']
+        self.r_min = self.cfg['r_min']
+        self.r_max = self.cfg['r_max']
+        self.T_min = self.cfg['T_min']
+        self.T_max = self.cfg['T_max']
+        self.coverage_area = self.cfg['coverage_area']
+        self.trajectory_kind = self.cfg['trajectory_kind']
+        self.rng = np.random.default_rng(seed)
+        self.kinds = ('linear', 'circular', 'random', 'full')
+
+        self.edge_set = [(1, 2), (0, 2)]
 
         # Dataset placeholders (initialized during setup)
         self.train_dataset = None
@@ -199,8 +221,54 @@ class CSIDataModule(L.LightningDataModule):
         np.ndarray
             Indices of nearest valid RX positions.
         """
+        xy = np.atleast_2d(xy)
         _, idx_local = self.kdtree.query(xy, k=1)
         return self.valid_idxs[idx_local].astype(np.int64)
+
+    def _generate_full_coverage(self) -> np.ndarray:
+        """
+        Generate a trajectory that visits every feasible RX point exactly once.
+
+        The trajectory is constructed via a randomized nearest-neighbor walk
+        over the feasible RX positions, ensuring spatial continuity.
+
+        Returns
+        -------
+        np.ndarray
+            Array of RX indices of length len(self.valid_idxs)
+            covering all feasible points exactly once.
+        """
+
+        coords = self.rx_pos_all_masked
+        N = len(coords)
+
+        visited = np.zeros(N, dtype=bool)
+        traj = np.empty(N, dtype=np.int64)
+
+        # random start
+        current = int(self.rng.integers(0, N))
+
+        for t in range(N):
+            traj[t] = self.valid_idxs[current]
+            visited[current] = True
+
+            if t == N - 1:
+                break
+
+            # query several nearest neighbors
+            dists, neigh = self.kdtree.query(coords[current], k=20)
+
+            # filter unvisited
+            candidates = [n for n in neigh if not visited[n]]
+
+            if len(candidates) == 0:
+                # fallback: pick random unvisited
+                candidates = np.where(~visited)[0]
+
+            # choose randomly among nearest
+            current = int(self.rng.choice(candidates))
+
+        return traj
 
     # ----------------- Trajectory generators -----------------
     def _rand_anchor_xy(self) -> np.ndarray:
@@ -246,33 +314,31 @@ class CSIDataModule(L.LightningDataModule):
         match kind:
             case 'linear':
                 start = self._rand_anchor_xy()
-                L = float(self.rng.uniform(*self.linear_len))
+                L = float(self.rng.uniform(*self.cfg['linear_len']))
                 ang = float(self.rng.uniform(0, 2 * np.pi))
                 end = start + L * np.array([np.cos(ang), np.sin(ang)])
                 s = np.linspace(0.0, 1.0, T)
                 xy = start * (1 - s)[:, None] + end * s[:, None]
-                xy = self._snap(xy)
 
             case 'circular':
                 center = self._rand_anchor_xy()
-                r = float(self.rng.uniform(*self.circle_r))
+                r = float(self.rng.uniform(*self.cfg['circle_r']))
                 phase = float(self.rng.uniform(0, 2 * np.pi))
                 ang = np.linspace(0.0, 2 * np.pi, T, endpoint=False) + phase
                 xy = np.stack(
                     [center[0] + r * np.cos(ang), center[1] + r * np.sin(ang)],
                     axis=1,
                 )
-                xy = self._snap(xy)
 
             case 'random':
                 xy = np.empty((T, 2), dtype=np.float64)
                 xy[0] = self._rand_anchor_xy()
                 prev_dir = None
                 for t in range(1, T):
-                    step = float(self.rng.uniform(*self.random_step))
+                    step = float(self.rng.uniform(*self.cfg['random_step']))
                     if (
                         prev_dir is None
-                        or self.rng.random() > self.random_keep_dir
+                        or self.rng.random() > self.cfg['random_keep_dir']
                     ):
                         ang = float(self.rng.uniform(0, 2 * np.pi))
                     else:
@@ -281,36 +347,17 @@ class CSIDataModule(L.LightningDataModule):
                             + self.rng.normal(0, 0.5)
                         )
                     d = np.array([np.cos(ang), np.sin(ang)])
-                    xy[t] = self._snap(xy[t - 1] + step * d)
+                    xy[t] = xy[t - 1] + step * d
                     prev_dir = d
-
+            case 'full':
+                return self._generate_full_coverage()
             case _:
                 raise RuntimeError(
                     'The passed "kind" is not supported.'
                     'Chose between {"linear", "circular", "random"}.'
                 )
 
-        return xy
-
-    # ----------------- CSI helpers -----------------
-    def _H_from_global_index(
-        self,
-        gidx: int,
-    ) -> torch.Tensor:
-        """
-        Return the CSI tensor for the given global index.
-
-        Parameters
-        ----------
-        gidx : int
-            Global index into the flattened trajectory dataset.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex CSI tensor for the corresponding RX location.
-        """
-        return torch.from_numpy(self.H_users[gidx])  # complex tensor
+        return self._snap(xy)
 
     def _pick_one(self, idxs: np.ndarray) -> int:
         """
@@ -330,7 +377,8 @@ class CSIDataModule(L.LightningDataModule):
             return -1
         return int(idxs[int(self.rng.integers(0, len(idxs)))])
 
-    def _shared_gen(self, num_users) -> None:
+    def _shared_gen(self, num_users) -> tuple[dict[Any, Any], dict[Any, Any]]:
+        self.idx_to_neg_pos = {}
         for user_id in range(num_users):
             # Random trajectory length
             T = int(self.rng.integers(self.T_min, self.T_max + 1))
@@ -387,7 +435,7 @@ class CSIDataModule(L.LightningDataModule):
                 idx_to_neg_pos=self.idx_to_neg_pos,
                 mask=self.bs_coords[base_station]['mask'],
                 rx_pos=self.bs_coords[base_station]['rx_pos'],
-                H_users=self.bs_coords[base_station]['channels'],
+                channels=self.bs_coords[base_station]['channels'],
             )
 
         for bs_1, bs_2 in self.edge_set:
@@ -440,21 +488,25 @@ class CSIDataModule(L.LightningDataModule):
         # Channel computation arguments
         ch_kwargs = self.cfg.get('compute_channels') or {}
 
+        max_subcarries = self.cfg.get('compute_channels').get(
+            'max_subcarriers', 0
+        )
+        ch_kwargs['ofdm'] = {'selected_subcarriers': np.arange(max_subcarries)}
+
         self.n_agents = (
             len(self.ds) if isinstance(self.ds, (list, tuple)) else 1
         )
 
         self.rx_pos_all = (
-            self.ds[0].rx_pos
-            if isinstance(self.ds, (list, tuple))
-            else self.ds.rx_pos
+            self.ds[0].rx_pos if len(self.ds.rx_pos) == 3 else self.ds.rx_pos
         )
         self.valid_rx_pos = {}
-        union_mask = np.zeros_like(self.rx_pos_all, dtype=bool)
+        union_mask = np.zeros_like(self.rx_pos_all.shape[0], dtype=bool)
 
-        for base_station in self.ds:
+        # TODO: adjust for a single BS
+        self.bs_coords = {}
+        for bs_id, base_station in enumerate(self.ds):
             mask = np.ones(len(self.rx_pos_all), dtype=bool)
-
             base_station.compute_channels(**ch_kwargs)
 
             # ------- Filter coverage area basestation -------
@@ -462,16 +514,16 @@ class CSIDataModule(L.LightningDataModule):
 
             d = np.linalg.norm(self.rx_pos_all - bs_pos, axis=1)
 
-            if self.cfg.r_min is not None:
-                mask &= d >= float(self.cfg.r_min)
+            if self.r_min is not None:
+                mask &= d >= float(self.r_min)
 
-            assert (
-                self.cfg.coverage_area >= 0 and self.cfg.coverage_area <= 1
-            ), '"coverage_area" must be between 0 and 1 for a BS.'
-            if self.cfg.r_max is None:
+            assert self.coverage_area >= 0 and self.coverage_area <= 1, (
+                '"coverage_area" must be between 0 and 1 for a BS.'
+            )
+            if self.r_max is None:
                 xmin, ymin = self.rx_pos_all[:, :2].min(axis=0)
                 xmax, ymax = self.rx_pos_all[:, :2].max(axis=0)
-                r_max = self.cfg.coverage_area * min(xmax - xmin, ymax - ymin)
+                r_max = self.coverage_area * min(xmax - xmin, ymax - ymin)
 
             mask &= d <= float(r_max)
 
@@ -481,13 +533,15 @@ class CSIDataModule(L.LightningDataModule):
             if self.z_max is not None:
                 mask &= self.rx_pos_all[:, 2] <= float(self.z_max)
 
-            self.bs_coords[base_station] = {
+            self.bs_coords[bs_id] = {
                 'rx_pos': self.rx_pos_all[np.where(mask)[0]],
                 'mask': mask,
-                'channels': base_station.channels[np.where(mask)[0]],
+                'channels': base_station.channels,
+                'coverage_radius': float(r_max),
             }
-            union_mask |= mask
+            union_mask = union_mask + mask
 
+        union_mask = union_mask.astype(np.bool)
         self.valid_idxs = np.where(union_mask)[0]
         self.rx_pos_all_masked = self.rx_pos_all[self.valid_idxs]
         self.rx_pos_all_masked = self.rx_pos_all_masked[:, :2]
@@ -527,7 +581,7 @@ class CSIDataModule(L.LightningDataModule):
 
         return None
 
-    def train_dataloader(self) -> DataLoader:
+    def train_dataloader(self) -> CombinedLoader:
         """
         Create the training DataLoader.
 
@@ -546,13 +600,13 @@ class CSIDataModule(L.LightningDataModule):
 
         for bs_1, bs_2 in self.train_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
-                self.train_shared_dataset[base_station],
+                self.train_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
             )
 
         return CombinedLoader(loaders, mode='max_size_cycle')
 
-    def test_dataloader(self) -> DataLoader:
+    def test_dataloader(self) -> CombinedLoader:
         """
         Create the test DataLoader.
 
@@ -570,13 +624,13 @@ class CSIDataModule(L.LightningDataModule):
 
         for bs_1, bs_2 in self.test_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
-                self.test_shared_dataset[base_station],
+                self.test_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
             )
 
         return CombinedLoader(loaders, mode='max_size_cycle')
 
-    def val_dataloader(self) -> DataLoader:
+    def val_dataloader(self) -> CombinedLoader:
         """
         Create the validation DataLoader.
 
@@ -594,8 +648,92 @@ class CSIDataModule(L.LightningDataModule):
 
         for bs_1, bs_2 in self.val_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
-                self.val_shared_dataset[base_station],
+                self.val_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
             )
 
         return CombinedLoader(loaders, mode='max_size_cycle')
+
+    def plot_bs_coverage(
+        self,
+        plot_name: str | None = None,
+    ) -> None:
+        """
+        Plot the coverage area of each base station together with RX positions.
+        Useful for debugging coverage filtering.
+        """
+
+        rx_xy = self.rx_pos_all[:, :2]
+
+        xmin, ymin = rx_xy.min(axis=0)
+        xmax, ymax = rx_xy.max(axis=0)
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        # RX grid bounding box (kept white)
+        grid_rect = Rectangle(
+            (xmin, ymin),
+            xmax - xmin,
+            ymax - ymin,
+            facecolor='white',
+            edgecolor='black',
+            linewidth=1.5,
+        )
+        ax.add_patch(grid_rect)
+
+        # color cycle
+        colors = plt.cm.tab10.colors
+
+        for bs_id, base_station in enumerate(self.ds):
+            color = colors[bs_id % len(colors)]
+
+            bs_pos = base_station.bs_pos.squeeze()
+            center = bs_pos[:2]
+
+            radius = self.bs_coords[bs_id]['coverage_radius']
+
+            circle = Circle(
+                center,
+                radius,
+                edgecolor=color,
+                facecolor=color,
+                alpha=0.18,
+                linewidth=2,
+            )
+
+            # clip circle to RX grid
+            circle.set_clip_path(grid_rect)
+
+            ax.add_patch(circle)
+
+            # BS marker
+            ax.scatter(
+                center[0],
+                center[1],
+                marker='^',
+                s=160,
+                color=color,
+                edgecolor='black',
+                linewidth=0.5,
+                label=f'BS {bs_id}',
+            )
+
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+
+        ax.set_aspect('equal')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_title('Base Station Coverage Areas')
+
+        ax.legend()
+        plt.tight_layout()
+        plot_name = (
+            f'{self.cfg["scenario"]}_bs_coverage.png'
+            if plot_name is None
+            else plot_name
+        )
+        plt.savefig(plot_name, dpi=300)
+        plt.close()
+
+        print(f'Coverage plot saved to: {plot_name}')

@@ -1,0 +1,15 @@
+scenario: city_3_houston_3p5
+download: true
+
+batch_size: 16
+num_workers: 0
+shuffle: true
+pin_memory: true
+
+trajectory_kind: full
+coverage_area: 0.5
+in_window: 3
+out_window: 6
+
+compute_channels:
+  max_subcarriers: 512

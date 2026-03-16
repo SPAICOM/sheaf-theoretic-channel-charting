@@ -20,13 +20,29 @@ def main(cfg: DictConfig):
     # -----------------------------
     # Load DeepMIMO
     # -----------------------------
-    dm = CSIDataModule(cfg.dataset)
+    dm = CSIDataModule(cfg.dataset, seed=cfg.seed)
     dm.prepare_data()
-    dm.setup()
-    batch = next(iter(dm.train_dataloader()))
-    xA, xP, xN, y = batch
-    print(xA.shape, xP.shape, None if xN is None else xN.shape, y)
-    print(xA)
+    dm.setup('fit')
+
+    loader = dm.train_dataloader()
+    print('LOCAL DATASETS')
+    for k, ds in dm.train_local_dataset.items():
+        print(k, len(ds))
+
+    print('\nSHARED DATASETS')
+    for k, ds in dm.train_shared_dataset.items():
+        print(k, len(ds))
+
+    batch = next(iter(loader))
+    print(type(batch), len(batch), batch[0])
+    dm.plot_bs_coverage()
+
+    # batch = next(iter(dm.train_dataloader()))
+    # print(batch)
+
+    # xA, xP, xN, y = batch
+    # print(xA.shape, xP.shape, None if xN is None else xN.shape, y)
+    # print(xA)
 
     # -----------------------------
     # Model

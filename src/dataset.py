@@ -33,7 +33,7 @@ def csi_to_realvec(
         Flattened real feature vector
     """
     device = H.device
-    H = H.detach().cpu().numpy()
+    H = torch.tensor(H).detach().clone()
     R, T, F = H.shape
 
     # 2 dimensional FT (from RT domain to beam angular domain)
@@ -82,7 +82,10 @@ def csi_to_realvec(
 #         except the first (sample) dimension.
 #     """
 #     # Flatten complex tensor into real vector (real + imag)
-#     H = H * torch.tensor(c)
+#     print(H.shape)
+#     # print(H)
+#     print(torch.tensor(H))
+#     H = torch.tensor(H) * torch.tensor(c)
 #     x = torch.view_as_real(H).reshape(-1).float()
 #     return x
 
@@ -136,7 +139,7 @@ class TrajectoryCSIDataset(Dataset):
         idx_to_neg_pos: dict,
         mask: np.ndarray,
         rx_pos: np.ndarray,
-        H_users: np.ndarray,
+        channels: np.ndarray,
         pair_mode: str = 'triplet',
         # bs_pos: np.ndarray = None,
         # num_users: int = 1,
@@ -167,161 +170,14 @@ class TrajectoryCSIDataset(Dataset):
         self.pair_mode = pair_mode
         self.p_positive = float(p_positive)
 
+        self.channels = channels
+
         # ---- Build variable-length trajectories once ----
-        self.idx_to_neg_pos = idx_to_neg_pos
+        self.idx_to_neg_pos = idx_to_neg_pos.copy()
         self.valid_idxs = np.where(mask)[0]
-        for user_id, idx in self.idx_to_neg_pos:
+        for user_id, idx in idx_to_neg_pos:
             if idx not in self.valid_idxs:
                 del self.idx_to_neg_pos[(user_id, idx)]
-
-        # for user_id in range(self.num_users):
-        #     # Random trajectory length
-        #     T = int(self.rng.integers(self.T_min, self.T_max + 1))
-
-        #     # Randomly pick trajectory kind
-        #     kind = (
-        #         self.kinds[int(self.rng.integers(0, len(self.kinds)))]
-        #         if self.trajectory_kind is None
-        #         else self.trajectory_kind
-        #     )
-
-        #     # Generate trajectory of RX indices
-        #     rx_idxs = self._generate_one(kind, T)
-        #     max_idx = np.max(rx_idxs)
-        #     min_idx = np.min(rx_idxs)
-        #     for idx in rx_idxs:
-        #         min_point = min_idx + self.out_window
-        #         max_point = max_idx - self.out_window
-        #         if idx > min_point and idx < max_point:
-        #             pos = np.clip(
-        #                 np.arange(
-        #                     idx - self.in_window, idx + self.in_window + 1
-        #                 ),
-        #                 a_min=0,
-        #                 a_max=max_idx,
-        #             )
-        #             pos = pos[pos != idx]
-        #             neg = np.clip(
-        #                 np.concat(
-        #                     [
-        #                         np.arange(
-        #                             idx - self.out_window,
-        #                             idx - self.in_window,
-        #                         ),
-        #                         np.arange(
-        #                             idx + self.in_window + 1,
-        #                             idx + self.out_window + 1,
-        #                         ),
-        #                     ]
-        #                 ),
-        #                 a_min=0,
-        #                 a_max=max_idx,
-        #             )
-        #             neg = neg[neg != idx]
-        #             self.idx_to_neg_pos[(user_id, idx)] = {
-        #                 'pos': pos,
-        #                 'neg': neg,
-        #             }
-
-    # ----------------- Snapping helpers -----------------
-    def _snap(
-        self,
-        xy: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Snap 2D coordinates to the nearest valid RX index.
-
-        Parameters
-        ----------
-        xy : np.ndarray
-            XY coordinates of shape (2,) or (N,2).
-
-        Returns
-        -------
-        np.ndarray
-            Indices of nearest valid RX positions.
-        """
-        _, idx_local = self.kdtree.query(xy, k=1)
-        return self.valid_idxs[idx_local].astype(np.int64)
-
-    # ----------------- Trajectory generators -----------------
-    def _rand_anchor_xy(self) -> np.ndarray:
-        """
-        Pick a random RX XY coordinate to serve as a trajectory anchor.
-
-        Returns
-        -------
-        np.ndarray
-            Selected XY coordinate (2,).
-        """
-        if self.bias_sampling:
-            power = np.linalg.norm(
-                self.H_users.reshape(len(self.H_users), -1), axis=1
-            )
-            prob = power / power.sum()
-            idx = self.rng.choice(len(self.rx_xy), p=prob)
-        else:
-            idx = int(self.rng.integers(0, len(self.rx_xy)))
-        return self.rx_xy[idx].copy()
-
-    def _generate_one(
-        self,
-        kind: str | None,
-        T: int,
-    ) -> np.ndarray:
-        """
-        Generate a trajectory of length T of the specified kind.
-
-        Parameters
-        ----------
-        kind : str
-            One of 'linear', 'circular', or 'random'.
-        T : int
-            Trajectory length.
-
-        Returns
-        -------
-        np.ndarray
-            Array of RX indices representing the trajectory.
-        """
-        if kind == 'linear':
-            start = self._rand_anchor_xy()
-            L = float(self.rng.uniform(*self.linear_len))
-            ang = float(self.rng.uniform(0, 2 * np.pi))
-            end = start + L * np.array([np.cos(ang), np.sin(ang)])
-            s = np.linspace(0.0, 1.0, T)
-            xy = start * (1 - s)[:, None] + end * s[:, None]
-
-        if kind == 'circular':
-            center = self._rand_anchor_xy()
-            r = float(self.rng.uniform(*self.circle_r))
-            phase = float(self.rng.uniform(0, 2 * np.pi))
-            ang = np.linspace(0.0, 2 * np.pi, T, endpoint=False) + phase
-            xy = np.stack(
-                [center[0] + r * np.cos(ang), center[1] + r * np.sin(ang)],
-                axis=1,
-            )
-
-        if kind == 'random':
-            xy = np.empty((T, 2), dtype=np.float64)
-            xy[0] = self._rand_anchor_xy()
-            prev_dir = None
-            for t in range(1, T):
-                step = float(self.rng.uniform(*self.random_step))
-                if (
-                    prev_dir is None
-                    or self.rng.random() > self.random_keep_dir
-                ):
-                    ang = float(self.rng.uniform(0, 2 * np.pi))
-                else:
-                    ang = float(
-                        np.arctan2(prev_dir[1], prev_dir[0])
-                        + self.rng.normal(0, 0.5)
-                    )
-                d = np.array([np.cos(ang), np.sin(ang)])
-                xy[t] = xy[t - 1] + step * d
-                prev_dir = d
-        return self._snap(xy)
 
     # ----------------- CSI helpers -----------------
     def _H_from_global_index(
@@ -341,25 +197,7 @@ class TrajectoryCSIDataset(Dataset):
         torch.Tensor
             Complex CSI tensor for the corresponding RX location.
         """
-        return torch.from_numpy(self.H_users[gidx])  # complex tensor
-
-    def _pick_one(self, idxs: np.ndarray) -> int:
-        """
-        Randomly select one index from a list of indices.
-
-        Parameters
-        ----------
-        idxs : np.ndarray
-            Array of candidate indices.
-
-        Returns
-        -------
-        int
-            Randomly selected index, or -1 if input is empty.
-        """
-        if idxs is None or len(idxs) == 0:
-            return -1
-        return int(idxs[int(self.rng.integers(0, len(idxs)))])
+        return torch.from_numpy(self.channels[gidx])  # complex tensor
 
     # ----------------- Dataset API -----------------
     def __len__(self) -> int:

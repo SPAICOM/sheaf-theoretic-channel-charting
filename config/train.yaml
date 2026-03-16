@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - dataset: asu_campus_3p5
+  - dataset: city_3_houston_3p5
   - model: siameseNN
 
 logger:
