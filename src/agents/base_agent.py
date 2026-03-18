@@ -117,6 +117,8 @@ class BaseAgent(nn.Module, ABC):
         """
         self.neighbors.add(idx)
 
+        return None
+
     def add_neighbors(
         self,
         neighbors: set[int],
@@ -130,6 +132,8 @@ class BaseAgent(nn.Module, ABC):
             Set of agent indices to be added as neighbors.
         """
         self.neighbors.update(neighbors)
+
+        return None
 
     def communicate(
         self,
