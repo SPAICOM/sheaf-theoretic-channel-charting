@@ -9,13 +9,13 @@ sys.path.append(str(Path(sys.path[0]).parent))
 import hydra
 import wandb
 from lightning import Trainer, seed_everything
-from lightning.callbacks import (
+from lightning.pytorch.callbacks import (
     BatchSizeFinder,
     EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
 )
-from lightning.loggers import WandbLogger
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
 # from src.agents import Agent
@@ -25,7 +25,7 @@ from src.utils import remove_non_empty_dir
 
 # TODO Config yaml of hydra
 @hydra.main(
-    config_path='../.conf/hydra/',
+    config_path='../config/hydra/',
     config_name='simulation',
     version_base='1.3',
 )
