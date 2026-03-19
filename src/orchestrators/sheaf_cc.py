@@ -73,6 +73,43 @@ class SheafCC(BaseOrchestrator):
                 The step type for logging purposes.
 
         Returns:
+            (outputs, total_loss) : tuple[
+                                        dict[int, torch.Tensor],
+                                        torch.Tensor
+                                    ]
+                The tuple with the output of the network and the epoch loss.
+        """
+        outputs = self(batch)
+
+        loss = 0
+
+        # Compute the personalized loss for each agent
+        for idx, agent in self.hparams.agents.items():
+            loss += agent.compute_loss(outputs[idx])
+
+        # Get the alignment loss by making neirby agents communicate
+        for agent, neighbors in self.hparams.neighbors.items():
+            for neighbor in neighbors:
+                self.communicate(agent, neighbor)
+        pass
+
+    def _shared_eval(
+        self,
+        batch: dict[str, list[torch.Tensor]],
+        batch_idx: int,
+        prefix: str,
+    ):
+        """A common step performed in the test and validation step.
+
+        Args:
+            batch : dict[str, list[torch.Tensor]]
+                The current batch.
+            batch_idx : int
+                The batch index.
+            prefix : str
+                The step type for logging purposes.
+
+        Returns:
             (output, total_loss) : tuple[dict[int, torch.Tensor], torch.Tensor]
                 The tuple with the output of the network and the epoch loss.
         """
