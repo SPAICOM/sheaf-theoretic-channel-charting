@@ -345,3 +345,7 @@ class SharedTrajectoryCSIDataset(Dataset):
         H_2 = csi_to_realvec(self.channels_bs_2[index])
 
         return H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
+
+
+if __name__ == '__main__':
+    pass

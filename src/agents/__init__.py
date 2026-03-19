@@ -1,5 +1,5 @@
-from .base_agent import BaseAgent
+from .agent import Agent
 
 __all__ = [
-    'BaseAgent',
+    'Agent',
 ]

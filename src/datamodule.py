@@ -737,3 +737,7 @@ class CSIDataModule(L.LightningDataModule):
         plt.close()
 
         print(f'Coverage plot saved to: {plot_name}')
+
+
+if __name__ == '__main__':
+    pass
