@@ -11,26 +11,31 @@ class BaseOrchestrator(l.LightningModule, ABC):
         agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
-        lmb: float = 1.0,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['agents'])
+
+        assert len(agents) > 0, 'The "agents" dictionary must be not empty'
 
         # Store agents in a ModuleDict so Lightning tracks parameters
-        self.hparams['agents'] = nn.ModuleDict(agents)
+        self.agents = nn.ModuleDict(
+            {str(idx): agent for idx, agent in agents.items()}
+        )
 
+    @abstractmethod
     def on_train_epoch_end(self):
         pass
 
     def forward(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass for multiple agents.
 
         Args:
-            batch: Dictionary mapping agent names to their input tensors.
+            batch : dict[int, torch.Tensor]
+                Dictionary mapping agent names to their input tensors.
                    Example:
                    {
                        "agent1": x1,
@@ -38,28 +43,29 @@ class BaseOrchestrator(l.LightningModule, ABC):
                    }
 
         Returns:
-            Dictionary mapping agent names to their latent representations.
+            outputs : dict[str, torch.Tensor]
+                Dictionary mapping agent names to their latent representations.
         """
         outputs = {}
 
-        for name, agent in self.hparams.agents.items():
-            x = batch[name]  # batch from CombinedLoader
+        for idx, agent in self.agents.items():
+            x = batch[idx]  # batch from CombinedLoader
             z = agent(x)  # forward pass of that agent
-            outputs[name] = z
+            outputs[idx] = z
 
         return outputs
 
     @abstractmethod
     def _shared_eval(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
         prefix: str,
     ):
         """A common step performed in the test and validation step.
 
         Args:
-            batch : dict[str, list[torch.Tensor]]
+            batch : dict[int, list[torch.Tensor]]
                 The current batch.
             batch_idx : int
                 The batch index.
@@ -67,20 +73,23 @@ class BaseOrchestrator(l.LightningModule, ABC):
                 The step type for logging purposes.
 
         Returns:
-            (output, total_loss) : tuple[dict[int, torch.Tensor], torch.Tensor]
+            (outputs, total_loss) : tuple[
+                                        dict[int, torch.Tensor],
+                                        torch.Tensor,
+                                    ]
                 The tuple with the output of the network and the epoch loss.
         """
         pass
 
     def training_step(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
     ) -> torch.Tensor:
         """The training step.
 
         Args:
-            batch : dict[str, list[torch.Tensor]]
+            batch : dict[int, list[torch.Tensor]]
                 The current batch.
             batch_idx : int
                 The batch index.
@@ -98,13 +107,13 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def test_step(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
     ) -> None:
         """The test step.
 
         Args:
-            batch : dict[str, list[torch.Tensor]]
+            batch : dict[int, list[torch.Tensor]]
                 The current batch.
             batch_idx : int
                 The batch index.
@@ -121,13 +130,13 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def validation_step(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
     ) -> dict[int, torch.Tensor]:
         """The validation step.
 
         Args:
-            batch : dict[str, list[torch.Tensor]]
+            batch : dict[int, list[torch.Tensor]]
                 The current batch.
             batch_idx : int
                 The batch index.
@@ -145,13 +154,13 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def predict_step(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
     ) -> dict[int, torch.Tensor]:
         """The predict step.
 
         Args:
-            batch : dict[str, list[torch.Tensor]]
+            batch : dict[int, list[torch.Tensor]]
                 The current batch.
             batch_idx : int
                 The batch index.
@@ -176,18 +185,19 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
             - "optimizer": The instantiated AdamW optimizer.
         """
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.LR)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr)
         return {
             'optimizer': optimizer,
         }
 
+    @abstractmethod
     def communicate(
         self,
         idx_i: int,
         idx_j: int,
     ) -> torch.Tensor:
         """"""
-        return None
+        pass
 
 
 if __name__ == '__main__':
