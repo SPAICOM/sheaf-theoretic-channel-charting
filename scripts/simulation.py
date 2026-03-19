@@ -98,7 +98,7 @@ def main(cfg: DictConfig) -> None:
     # ===================================================
     #                Define the Agents
     # ===================================================
-    # agents: list[Agent] = ...
+    # agents: dict[int, Agent] = ...
 
     # ===================================================
     #                Define the Orchestrator

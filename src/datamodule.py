@@ -16,7 +16,7 @@ The DataModule follows the PyTorch Lightning lifecycle:
 from typing import Any
 
 import deepmimo as dm
-import lightning as L
+import lightning as l
 import matplotlib.pyplot as plt
 import numpy as np
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
@@ -70,7 +70,7 @@ def _merge_defaults(
     return out
 
 
-class CSIDataModule(L.LightningDataModule):
+class CSIDataModule(l.LightningDataModule):
     """
     PyTorch Lightning DataModule for trajectory-based CSI learning.
 
