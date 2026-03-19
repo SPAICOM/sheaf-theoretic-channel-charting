@@ -352,12 +352,13 @@ class Agent(nn.Module):
         ----------
         batch : tuple
             Batch containing:
-            - xA : torch.Tensor
-                Anchor samples.
-            - xP : torch.Tensor
-                Positive samples.
-            - xN : torch.Tensor | None
-                Negative samples (None when using contrastive loss).
+            - embA : torch.Tensor
+                Embeddings of Anchor samples.
+            - embP : torch.Tensor
+                Embeddings of Positive samples.
+            - embN : torch.Tensor | None
+                Embeddings of Negative samples
+                (None when using contrastive loss).
             - y : torch.Tensor
                 Target tensor used by the Siamese loss.
 
@@ -367,7 +368,7 @@ class Agent(nn.Module):
         torch.Tensor
             Scalar tensor representing the loss.
         """
-        embA, embP, embN, y = self(batch)
+        embA, embP, embN, y = batch
 
         loss = self.siamese(z1=embA, z2=embP, z3=embN, y=y)
 
