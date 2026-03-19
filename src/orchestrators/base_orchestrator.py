@@ -144,7 +144,7 @@ class BaseOrchestrator(L.LightningModule):
         """Configure the optimizer used for training.
 
         Uses the AdamW optimizer with the learning rate defined in
-        ``self.hparams.LR``.
+        ``self.hparams.lr``.
 
         Returns:
             dict[str, object]: A dictionary containing the optimizer used by
@@ -156,3 +156,7 @@ class BaseOrchestrator(L.LightningModule):
         return {
             'optimizer': optimizer,
         }
+
+
+if __name__ == '__main__':
+    pass

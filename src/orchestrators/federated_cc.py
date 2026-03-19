@@ -138,3 +138,7 @@ class FederatedCC(BaseOrchestrator):
         )
 
         return output, total_loss
+
+
+if __name__ == '__main__':
+    pass
