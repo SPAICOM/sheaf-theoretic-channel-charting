@@ -109,7 +109,6 @@ class CSIDataModule(L.LightningDataModule):
         'download': True,  # whether to download the dataset if missing
         'batch_size': 64,
         'num_workers': 0,
-        'shuffle': True,
         'pin_memory': True,
         'compute_channels': {},
         'train_num_users': 1,

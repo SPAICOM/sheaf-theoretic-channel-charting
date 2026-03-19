@@ -3,7 +3,6 @@ download: true
 
 batch_size: 16
 num_workers: 0
-shuffle: true
 pin_memory: true
 
 num_users: 100

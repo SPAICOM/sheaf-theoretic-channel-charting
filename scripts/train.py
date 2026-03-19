@@ -12,7 +12,7 @@ from src import CSIDataModule
 
 
 @hydra.main(
-    config_path='../config',
+    config_path='../config/hydra/',
     config_name='train',
     version_base='1.3',
 )
