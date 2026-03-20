@@ -54,14 +54,33 @@ class DistanceLayer(nn.Module):
         """
         match self.distance_mode:
             case 'euclidean':
-                # Standard Euclidean distance between vectors
-                return F.pairwise_distance(z1, z2)
+                # Anchor expansion
+                z1 = z1.unsqueeze(1)                    # (B, 1, D)
+
+                # Distance computation (batching + broadcasting)
+                dist = (z1 - z2).pow(2).sum(dim=-1)     # (B, K)
+
+                # Loss aggregation
+                loss = dist.sum(dim=1).mean()
+                return loss
 
             case 'cosine':
-                # Cosine distance (1 - cosine similarity)
-                z1 = F.normalize(z1, dim=-1)
-                z2 = F.normalize(z2, dim=-1)
-                return 1 - F.cosine_similarity(z1, z2, dim=-1)
+                # Normalize
+                z1 = F.normalize(z1, dim=-1)          # (B, D)
+                z2 = F.normalize(z2, dim=-1)          # (B, K, D)
+
+                # Anchor expansion
+                z1 = z1.unsqueeze(1)                  # (B, 1, D)
+
+                # Cosine similarity for each positive
+                sim = (z1 * z2).sum(dim=-1)           # (B, K)
+
+                # Convert to cosine distance
+                dist = 1 - sim                        # (B, K)
+
+                # Loss aggregation
+                loss = dist.sum(dim=1).mean()
+                return loss
 
             case _:
                 return None
