@@ -4,7 +4,10 @@ from torch.utils.data import Dataset
 
 
 def csi_to_realvec(
-    H: torch.Tensor, lag_step: int = 4, max_lag: int = 60, eps: float = 1e-12
+    H,
+    lag_step: int = 4,
+    max_lag: int = 60,
+    eps: float = 1e-12,
 ):
     """
     Preprocess CSI tensor following the pipeline in
@@ -33,7 +36,8 @@ def csi_to_realvec(
         Flattened real feature vector
     """
     device = H.device
-    H = torch.tensor(H).detach().clone()
+    # H = torch.tensor(H).detach().clone()
+    H = np.array(H)
     R, T, F = H.shape
 
     # 2 dimensional FT (from RT domain to beam angular domain)
@@ -58,7 +62,7 @@ def csi_to_realvec(
 
     # Flatten to vector
     features = r.reshape(-1)
-    features = torch.from_numpy(features).to(device)
+    features = torch.from_numpy(features).float().to(device)
 
     return features
 

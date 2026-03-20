@@ -138,12 +138,23 @@ class FederatedCC(BaseOrchestrator):
                 The tuple with the output of the network and the epoch loss.
         """
         outputs = self(batch)
-
         total_loss = 0
 
         # Compute the personalized loss for each agent
         for idx, agent in self.agents.items():
-            total_loss += agent.compute_loss(outputs[idx])
+            batch_size = batch[int(idx)][0].size(0)
+            loss = agent.compute_loss(outputs[int(idx)])
+
+            # per-agent loss
+            self.log(
+                f'{prefix}/loss_agent_{idx}',
+                loss,
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+
+            total_loss += loss
 
         # Log the total_loss
         self.log(
@@ -151,9 +162,13 @@ class FederatedCC(BaseOrchestrator):
             total_loss,
             on_step=False,
             on_epoch=True,
+            batch_size=batch_size,
         )
 
         return outputs, total_loss
+
+    def communicate(self, idx_i: int, idx_j: int):
+        pass
 
 
 if __name__ == '__main__':

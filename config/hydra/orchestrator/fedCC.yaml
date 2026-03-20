@@ -1,0 +1,5 @@
+_target_: src.FederatedCC
+
+agents: null
+neighbors: null
+lr: 1e-3

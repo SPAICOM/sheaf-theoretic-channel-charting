@@ -135,6 +135,7 @@ class CSIDataModule(l.LightningDataModule):
         'train_seed': 27,
         'test_seed': 42,
         'val_seed': 123,
+        'edge_set': [],
     }
 
     def __init__(
@@ -171,13 +172,14 @@ class CSIDataModule(l.LightningDataModule):
         self.rng = np.random.default_rng(seed)
         self.kinds = ('linear', 'circular', 'random', 'full')
 
-        self.edge_set = [(1, 2), (0, 2)]
+        self.edge_set = [tuple(edge) for edge in self.cfg['edge_set']]
 
         # Dataset placeholders (initialized during setup)
         self.train_dataset = None
         self.test_dataset = None
         self.val_dataset = None
-        self.n_agents = None
+        self.n_agents = 1
+        self.feature_dim = None
 
         # Assertions
         assert self.out_window > self.in_window, (
@@ -577,6 +579,9 @@ class CSIDataModule(l.LightningDataModule):
         self.val_local_dataset, self.val_shared_dataset = self._shared_gen(
             val_num_users
         )
+
+        tmp_datasets = self.val_local_dataset.copy()
+        self.feature_dim = next(iter(tmp_datasets[0]))[0].shape[0]
 
         return None
 

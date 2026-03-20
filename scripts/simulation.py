@@ -6,27 +6,22 @@ from pathlib import Path
 
 sys.path.append(str(Path(sys.path[0]).parent))
 
+from collections import defaultdict
+
 import hydra
-import wandb
+from hydra.utils import instantiate
+
+# import omegaconf
 from lightning import Trainer, seed_everything
-from lightning.pytorch.callbacks import (
-    BatchSizeFinder,
-    EarlyStopping,
-    LearningRateMonitor,
-    ModelCheckpoint,
-)
-from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
-# from src.agents import Agent
 from src.datamodule import CSIDataModule
 from src.utils import remove_non_empty_dir
 
 
-# TODO Config yaml of hydra
 @hydra.main(
     config_path='../config/hydra/',
-    config_name='simulation',
+    config_name='train',
     version_base='1.3',
 )
 def main(cfg: DictConfig) -> None:
@@ -42,87 +37,71 @@ def main(cfg: DictConfig) -> None:
     # Create directories
     RESULTS_PATH.mkdir(exist_ok=True, parents=True)
 
-    # Define some variables
-    uuid: str = '...'
-
     # ===================================================
     #                  Wandb Logger
     # ===================================================
-    # Convert DictConfig to a standard dictionary before passing to wandb
-    wandb_config = OmegaConf.to_container(
-        cfg, resolve=True, throw_on_missing=True
-    )
+    logger = instantiate(cfg.logger)
 
-    # W&B login and Logger intialization
-    wandb.login()
-    wandb_logger = WandbLogger(
-        project=cfg.wandb.project,
-        name=uuid,
-        config=wandb_config,
-        log_model=cfg.wandb.log_model,
-    )
+    # Log full Hydra config to WandB
+    if logger is not None:
+        logger.experiment.config.update(
+            OmegaConf.to_container(cfg, resolve=True)
+        )
 
     # ===================================================
     #             Define the Trainer
     # ===================================================
-    # # Callbacks definition
-    callbacks = [
-        LearningRateMonitor(logging_interval='step', log_momentum=True),
-        ModelCheckpoint(monitor='valid/loss_epoch', save_top_k=1, mode='min'),
-        BatchSizeFinder(mode='binsearch', max_trials=8),
-        EarlyStopping(monitor='valid/loss_epoch', patience=10),
-    ]
+    # Instantiate callbacks
+    callbacks = [instantiate(cb_conf) for cb_conf in cfg.callbacks.values()]
 
-    # Initialiaze thr Trainer
-    trainer: Trainer = Trainer(
-        max_epochs=cfg.trainer.epochs,
-        num_sanity_val_steps=cfg.trainer.num_sanity_val_steps,
-        logger=wandb_logger,
-        deterministic=cfg.trainer.deterministic,
+    # Instantiate Trainer
+    trainer = Trainer(
+        **cfg.trainer,
         callbacks=callbacks,
-        log_every_n_steps=cfg.trainer.log_every_n_steps,
+        logger=logger,
     )
 
     # ===================================================
     #             Define the DataModule
     # ===================================================
-    datamodule: CSIDataModule = CSIDataModule(
-        dataset_cfg=cfg.dataset,
-        seed=cfg.seed,
-    )
-
-    # Prepare and setup the data
+    datamodule = CSIDataModule(cfg.dataset, seed=cfg.seed)
     datamodule.prepare_data()
     datamodule.setup('fit')
+    agents = {}
 
-    # ===================================================
-    #                Define the Agents
-    # ===================================================
-    # agents: dict[int, Agent] = ...
+    for i in range(datamodule.n_agents):
+        agents[i] = instantiate(cfg.model, in_dim=datamodule.feature_dim)
 
     # ===================================================
     #                Define the Orchestrator
     # ===================================================
-    # TODO create network edges dictionary:
-    # {
-    #   'agent_idx': {neighbors idx}
-    # }
-    orchestrator = ...
+    neighbors = defaultdict(list)
 
-    # ===================================================
-    #               Orchestrator Training
-    # ===================================================
+    for u, v in cfg.dataset.edge_set:
+        neighbors[u].append(v)
+        neighbors[v].append(u)  # remove this line if graph is directed
+
+    neighbors = dict(neighbors)
+
+    # Instantiate orchestrator
+    orchestrator = instantiate(
+        cfg.orchestrator,
+        agents=agents,
+        neighbors=neighbors,
+        _convert_='all',
+    )
+
+    # -------------------------
+    # Train
+    # -------------------------
     trainer.fit(orchestrator, datamodule=datamodule)
-
-    # Closing W&B
-    wandb.finish()
 
     # Cleaning the working space
     remove_non_empty_dir('./wandb/')
     remove_non_empty_dir('./multirun/')
     remove_non_empty_dir('./outputs/')
     remove_non_empty_dir('~/.cache/wandb/')
-    remove_non_empty_dir(cfg.wandb.project)
+    remove_non_empty_dir(cfg.logger.project)
 
     return None
 

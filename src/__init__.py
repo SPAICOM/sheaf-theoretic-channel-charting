@@ -1,5 +1,11 @@
 from .agents import Agent
 from .datamodule import CSIDataModule
-from .models import SiameseNN
+from .orchestrators import FederatedCC, OptimalTransportCC, SheafCC
 
-__all__ = ['SiameseNN', 'CSIDataModule', 'Agent']
+__all__ = [
+    'CSIDataModule',
+    'Agent',
+    'FederatedCC',
+    'OptimalTransportCC',
+    'SheafCC',
+]

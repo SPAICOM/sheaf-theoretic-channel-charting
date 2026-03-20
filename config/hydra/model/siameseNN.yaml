@@ -1,4 +1,4 @@
-_target_: src.SiameseNN
+_target_: src.Agent
 
 autoenc: false
 distance_mode: euclidean
@@ -6,8 +6,5 @@ loss_mode: triplet
 out_dim: 2
 num_hidden_layers: 2
 margin: 1
-
-max_epochs: 100
-lr: 1e-3
 
 

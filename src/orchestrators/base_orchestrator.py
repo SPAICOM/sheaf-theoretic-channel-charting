@@ -28,7 +28,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def forward(
         self,
-        batch: dict[int, list[torch.Tensor]],
+        combined_batch: dict[int, list[torch.Tensor]],
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass for multiple agents.
@@ -46,12 +46,20 @@ class BaseOrchestrator(l.LightningModule, ABC):
             outputs : dict[str, torch.Tensor]
                 Dictionary mapping agent names to their latent representations.
         """
-        outputs = {}
+        # if isinstance(batch, tuple):
+        #     batch = batch[0]
 
+        outputs = {}
+        print(combined_batch.keys())
         for idx, agent in self.agents.items():
-            x = batch[idx]  # batch from CombinedLoader
-            z = agent(x)  # forward pass of that agent
-            outputs[idx] = z
+            # key = str(idx) if str(idx) in batch else idx
+            idx = int(idx)
+            print(type(combined_batch[idx]), len(combined_batch[idx]))
+            batch = combined_batch[idx]  # (embedding, label)
+
+            out = agent(batch)
+
+            outputs[idx] = out
 
         return outputs
 
@@ -107,7 +115,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def test_step(
         self,
-        batch: dict[int, list[torch.Tensor]],
+        batch: dict[str, list[torch.Tensor]],
         batch_idx: int,
     ) -> None:
         """The test step.
@@ -130,7 +138,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def validation_step(
         self,
-        batch: dict[int, list[torch.Tensor]],
+        batch: dict[str, list[torch.Tensor]],
         batch_idx: int,
     ) -> dict[int, torch.Tensor]:
         """The validation step.
@@ -154,7 +162,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def predict_step(
         self,
-        batch: dict[int, list[torch.Tensor]],
+        batch: dict[str, list[torch.Tensor]],
         batch_idx: int,
     ) -> dict[int, torch.Tensor]:
         """The predict step.
