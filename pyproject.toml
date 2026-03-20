@@ -1,5 +1,5 @@
 [project]
-name = "federatedchannelcharting"
+name = "sheaf-theoretic-channel-charting"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -59,9 +59,6 @@ fixable = ['ALL']
 
 [tool.ruff.lint.pydocstyle]
 convention = 'numpy'
-
-[tool.ruff.lint.per-file-ignores]
-"scripts/merge_parquet_cache.py" = ["PERF203"]
 
 [tool.ruff.format]
 quote-style = "single"

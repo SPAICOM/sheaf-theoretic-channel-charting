@@ -227,37 +227,5 @@ class SiameseLayer(nn.Module):
         return self.loss_func(z1=z1, z2=z2, z3=z3, y=y)
 
 
-class OptimalTransportLayer(nn.Module):
-    def __init__(
-        self,
-        in_dim: int = 2,
-    ) -> None:
-
-        super().__init__()
-        self.in_dim = in_dim
-
-        # Parameters of the affine function
-        self.M = nn.Parameter(torch.eye(in_dim))                    # Linear map
-        self.b = nn.Parameter(torch.zeros(in_dim))                  # Bias
-        self.a = nn.Parameter(torch.zeros(in_dim))                  # Log of the scaling vector
-
-    def forward(
-        self,
-        x: torch.Tensor
-    ) -> torch.Tensor:
-
-        # Ensure a > 0
-        a = torch.exp(self.a)
-
-        # Apply affine map
-        y = torch.matmul(x, self.M.T) - self.b
-        
-        # Return scaled mapping
-        return y / a
-
-
 if __name__ == '__main__':
     pass
-
-
-

@@ -7,12 +7,12 @@
 import shutil
 from pathlib import Path
 
-
 # ================================================================
 #
 #                        Methods Definition
 #
 # ================================================================
+
 
 def remove_non_empty_dir(path: str) -> None:
     """
