@@ -19,6 +19,29 @@ class FederatedCC(BaseOrchestrator):
 
         self._validate_agents_for_fedavg()
 
+    def _validate_agents_for_fedavg(self):
+        agents = list(self.agents.values())
+        ref = agents[0]
+
+        ref_params = dict(ref.named_parameters())
+        ref_buffers = dict(ref.named_buffers())
+
+        for i, agent in enumerate(agents[1:], start=1):
+            if type(agent) is not type(ref):
+                raise TypeError(f'Agent {i} has different class.')
+
+            params = dict(agent.named_parameters())
+            if params.keys() != ref_params.keys():
+                raise ValueError(f'Agent {i} param names mismatch.')
+
+            for k in ref_params:
+                if params[k].shape != ref_params[k].shape:
+                    raise ValueError(f'Shape mismatch in {k}')
+
+            buffers = dict(agent.named_buffers())
+            if buffers.keys() != ref_buffers.keys():
+                raise ValueError(f'Agent {i} buffer mismatch.')
+
     @torch.no_grad()
     def on_train_epoch_end(self) -> None:
         """Perform neighbor-restricted Federated Averaging.
