@@ -46,55 +46,32 @@ class OptimalTransportCC(BaseOrchestrator):
         )
         self.save_hyperparameters()
 
-        # Agents list
-        self.hparams['agents'] = nn.ModuleList(agents)
-
-        # TODO
         # Network description
-        self.hparams['edges'] = None
-
-    def on_train_epoch_end(self):
-        dataloader = self.trainer.datamodule.train_dataloader()
-
-        self.eval()
-
-        with torch.no_grad():
-            # Reset local aggregators of cross-covariance
-            for agent in self.hparams.agents:
-                agent.reset_epoch_statistics()
-
-            # Compute and aggregate embeddings
-            for batch in dataloader:
-                batch = self._move_batch_to_device(batch)
-
-                output = self(batch)
-
-                for i, j in self.hparams.edges:
-                    self.hparams.agents[i].accumulate_statistics(
-                        output[i][0], output[j][0], self.hparams.agents[j].R
-                    )
-                    self.hparams.agents[j].accumulate_statistics(
-                        output[j][0], output[i][0], self.hparams.agents[i].R
-                    )
-
-            # Perform reference alignment
-            for agent in self.hparams.agents:
-                agent.update_reference_frame()
-
-        self.train()
-
-        return None
+        self.hparams['edges'] = list({
+            tuple(sorted((agent, neighbor)))
+            for agent in self.hparams['neighbors']
+            for neighbor in self.hparams['neighbors'][agent]
+        })
+        
+        # Optimal transport module dictionary
+        self.transport_layers = nn.ModuleDict({
+            f"{i}_{j}": nn.ModuleDict({
+                str(i): OptimalTransportLayer(self.agents[0].out_dim),
+                str(j): OptimalTransportLayer(self.agents[0].out_dim),
+            })
+            for (i, j) in self.hparams['edges']
+        })
 
     def _shared_eval(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
         prefix: str,
     ):
         """A common step performed in the test and validation step.
 
         Args:
-            batch : dict[str, list[torch.Tensor]]
+            batch : dict[int, list[torch.Tensor]]
                 The current batch.
             batch_idx : int
                 The batch index.
@@ -108,102 +85,58 @@ class OptimalTransportCC(BaseOrchestrator):
                                     ]
                 The tuple with the output of the network and the epoch loss.
         """
-        outputs = self(batch)
+        private_outputs = self(batch)
 
-        loss = 0
+        # Compute embeddings of the overlapping areas
+        shared_outputs = {
+            (i,j) : {
+                i: self.agents[i](batch[(int(i),int(j))][0]),
+                j: self.agents[j](batch[(int(i),int(j))][1])
+            }
+        }
+
+        total_loss = 0
 
         # Compute the personalized loss for each agent
-        for idx, agent in self.hparams.agents.items():
-            loss += agent.compute_loss(outputs[idx])
+        for idx, agent in self.agents.items():
+            batch_size = batch[int(idx)][0].size(0)
+            private_loss = agent.compute_loss(private_outputs[int(idx)])
 
-        # Get the alignment loss by making neirby agents communicate
-        for agent, neighbors in self.hparams.neighbors.items():
-            for neighbor in neighbors:
-                self.communicate(agent, neighbor)
-        pass
-
-    def _shared_eval(
-        self,
-        batch: dict[str, list[torch.Tensor]],
-        batch_idx: int,
-        prefix: str,
-    ):
-        """A common step performed in the test and validation step.
-
-        Args:
-            batch : dict[str, list[torch.Tensor]]
-                The current batch.
-            batch_idx : int
-                The batch index.
-            prefix : str
-                The step type for logging purposes.
-
-        Returns:
-            (output, total_loss) : tuple[dict[int, torch.Tensor], torch.Tensor]
-                The tuple with the output of the network and the epoch loss.
-        """
-        R = torch.zeros_like(self.hparams.L)
-        main_loss = 0
-        reg_loss = 0
-        output = self(batch)
-        E = torch.cat(
-            [output[agent.idx] for agent in self.hparams.agents], dim=0
-        )
-
-        for agent in self.hparams.agents:
-            main_loss += agent.compute_loss(output[agent.idx])
-            R[
-                agent.idx * self.hparams.n : (agent.idx + 1) * self.hparams.n,
-                agent.idx * self.hparams.n : (agent.idx + 1) * self.hparams.n,
-            ] = agent.R
-
-        REP = R @ E
-
-        # Node mask
-        B = len(self.hparams.agents)
-        T = E.shape[1]
-
-        node_vals = E.view(B, self.hparams.n, T)
-        node_mask = node_vals.abs().sum(dim=1) != 0
-
-        # Edge mask
-        # Need it to zero-out edges where at least one
-        # Base-station does not observe the trajectory
-
-        edge_i = torch.tensor(
-            [e[0] for e in self.hparams.edges], device=E.device
-        )
-        edge_j = torch.tensor(
-            [e[1] for e in self.hparams.edges], device=E.device
-        )
-
-        edge_mask = (node_mask[edge_i] & node_mask[edge_j]).float()
-
-        for i in range(self.hparams.n):
-            reg_loss += self.hparams.lmb * torch.sum(
-                (edge_mask * self.hparams.B.T @ REP[i :: self.hparams.n, :])
-                ** 2
+            self.log(
+                f'{prefix}/loss_agent_{idx}',
+                loss,
+                on_step=True,
+                on_epoch=True,
+                batch_size=batch_size,
+                prog_bar=False,
             )
 
-        total_loss = main_loss + reg_loss
+            total_loss += private_loss
+
+        for i,j in self.edges:
+            transport_i = self.transport_layers[f"{i}_{j}"][str(i)](
+                shared_outputs[(i, j)][i]
+            )
+
+            transport_j = self.transport_layers[f"{i}_{j}"][str(j)](
+                shared_outputs[(i, j)][j]
+            )
+
+            transport_loss = torch.linalg.norm(transport_i - transport_j) ** 2
+
+            total_loss += self.hparams['lmb'] * transport_loss
 
         self.log(
-            f'{prefix}/main_loss_epoch',
-            main_loss,
-            on_step=False,
-            on_epoch=True,
-        )
-        self.log(
-            f'{prefix}/reg_loss_epoch', reg_loss, on_step=False, on_epoch=True
-        )
-        self.log(
-            f'{prefix}/total_loss_epoch',
+            f'{prefix}/total_loss',
             total_loss,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
+            batch_size=batch_size,
+            prog_bar=True,
         )
 
-        return output, total_loss
+        return outputs, total_loss
+
 
 
 if __name__ == '__main__':

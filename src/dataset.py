@@ -341,7 +341,7 @@ class SharedTrajectoryCSIDataset(Dataset):
 
         Returns
         -------
-        xA, xP, xN, y
+        H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
             CSI vectors and label / placeholder.
         """
         # Anchor retrieving
