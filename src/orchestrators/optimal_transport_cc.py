@@ -96,8 +96,14 @@ class OptimalTransportCC(BaseOrchestrator):
         # Compute embeddings of the overlapping areas
         shared_outputs = {
             (i, j): {
-                i: self.agents[i](batch[(int(i), int(j))][0]),
-                j: self.agents[j](batch[(int(i), int(j))][1]),
+                i: self.agents[i](
+                    batch[(int(i), int(j))][0],
+                    triplet_mode=False,
+                ),
+                j: self.agents[j](
+                    batch[(int(i), int(j))][1],
+                    triplet_mode=False,
+                ),
             }
             for (i, j) in self.hparams['edges']
         }
@@ -130,7 +136,7 @@ class OptimalTransportCC(BaseOrchestrator):
         )
 
         # Compute the transport losses
-        for i, j in self.edges:
+        for i, j in self.hparams['edges']:
             transport_i = self.transport_layers[f'{i}_{j}'][str(i)](
                 shared_outputs[(i, j)][i]
             )

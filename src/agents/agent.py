@@ -294,7 +294,11 @@ class Agent(nn.Module):
     def forward(
         self,
         batch,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
+        triplet_mode: bool = True,
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        | torch.Tensor
+    ):
         """
         Forward pass used by training, validation, and test steps.
 
@@ -327,16 +331,20 @@ class Agent(nn.Module):
                 Target tensor used to compute the loss.
         """
 
-        xA, xP, xN, y = batch
+        if triplet_mode:
+            xA, xP, xN, y = batch
 
-        # Compute embeddings
-        embA = self.decoder(self.encoder(xA))
-        embP = self.decoder(self.encoder(xP))
+            # Compute embeddings
+            embA = self.decoder(self.encoder(xA))
+            embP = self.decoder(self.encoder(xP))
 
-        # Negative sample may be None in contrastive mode
-        embN = self.decoder(self.encoder(xN)) if xN is not None else None
+            # Negative sample may be None in contrastive mode
+            embN = self.decoder(self.encoder(xN)) if xN is not None else None
+            out = (embA, embP, embN, y)
 
-        return embA, embP, embN, y
+        else:
+            out = self.decoder(self.encoder(batch))
+        return out
 
     def compute_loss(
         self,
