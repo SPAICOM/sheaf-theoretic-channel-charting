@@ -72,8 +72,6 @@ def main(cfg: DictConfig) -> None:
     for i in range(datamodule.n_agents):
         agents[i] = instantiate(cfg.model, in_dim=datamodule.feature_dim)
 
-    print(agents.keys())
-
     # ===================================================
     #                Define the Orchestrator
     # ===================================================

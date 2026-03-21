@@ -164,7 +164,6 @@ class LossLayer(nn.Module):
 
                 dAP = self.dist_layer(z1, z2)
                 dAN = self.dist_layer(z1, z3)
-                # print(dAP, dAN)
                 L = torch.clamp(dAP - dAN + self.margin, min=0.0)
 
             case _:
@@ -243,6 +242,7 @@ class SiameseLayer(nn.Module):
         torch.Tensor
             Mean loss over the batch.
         """
+
         return self.loss_func(z1=z1, z2=z2, z3=z3, y=y)
 
 

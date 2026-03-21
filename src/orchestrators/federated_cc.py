@@ -10,15 +10,16 @@ class FederatedCC(BaseOrchestrator):
         agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
+        weight_decay: float,
     ):
         super().__init__(
             agents=agents,
             neighbors=neighbors,
             lr=lr,
+            weight_decay=weight_decay,
         )
 
         self._validate_agents_for_fedavg()
-        print(type(self.hparams.neighbors[0]))
 
     def _validate_agents_for_fedavg(self):
         agents = list(self.agents.values())

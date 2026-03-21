@@ -55,17 +55,20 @@ class Encoder(nn.Module):
         self.act = nn.ReLU()
 
         # Container for linear layers
-        self.layers = nn.ModuleList()
+        self.linear_layers = nn.ModuleList()
+        self.norm_layers = nn.ModuleList()
 
         dim = in_dim
 
         # Build hidden layers that progressively reduce dimensionality
         for _ in range(self.num_hidden_layers - 1):
-            self.layers.append(nn.Linear(dim, dim // 2))
+            self.linear_layers.append(nn.Linear(dim, dim // 2))
+            self.norm_layers.append(nn.LayerNorm(dim // 2))
             dim = dim // 2
 
         # Final projection layer producing the embedding
-        self.layers.append(nn.Linear(dim, self.out_dim))
+        self.linear_layers.append(nn.Linear(dim, self.out_dim))
+        # self.norm_layers.append(nn.BatchNorm1d(self.out_dim))
 
     def forward(
         self,
@@ -86,10 +89,11 @@ class Encoder(nn.Module):
         """
         # Apply activation to all layers except the last
         for i in range(self.num_hidden_layers - 1):
-            x = self.act(self.layers[i](x))
+            x = self.act(self.linear_layers[i](x))
+            x = self.norm_layers[i](x)
 
         # Final linear projection (no activation)
-        return self.layers[-1](x)
+        return self.linear_layers[-1](x)
 
 
 class Decoder(nn.Module):
@@ -340,6 +344,7 @@ class Agent(nn.Module):
 
             # Negative sample may be None in contrastive mode
             embN = self.decoder(self.encoder(xN)) if xN is not None else None
+
             out = (embA, embP, embN, y)
 
         else:
@@ -377,7 +382,6 @@ class Agent(nn.Module):
             Scalar tensor representing the loss.
         """
         embA, embP, embN, y = batch
-
         loss = self.siamese(z1=embA, z2=embP, z3=embN, y=y)
 
         return loss

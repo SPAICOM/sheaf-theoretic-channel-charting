@@ -11,6 +11,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
+        weight_decay: float = 0.0,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['agents'])
@@ -191,7 +192,11 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
             - "optimizer": The instantiated AdamW optimizer.
         """
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr)
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,
+        )
         return {
             'optimizer': optimizer,
         }

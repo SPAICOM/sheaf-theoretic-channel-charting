@@ -432,7 +432,6 @@ class CSIDataModule(l.LightningDataModule):
         shared_datasets = {}
 
         for base_station, _ in enumerate(self.ds):
-            print(self.bs_coords[base_station]['channels'].shape)
             local_datasets[base_station] = TrajectoryCSIDataset(
                 idx_to_neg_pos=self.idx_to_neg_pos,
                 mask=self.bs_coords[base_station]['mask'],
@@ -496,7 +495,6 @@ class CSIDataModule(l.LightningDataModule):
         ch_kwargs['ue_antenna']['shape'] = np.array(
             ch_kwargs.get('ue_antenna', {}).get('shape', [1, 1])
         )
-        print(ch_kwargs['ue_antenna']['shape'])
         ch_kwargs['ofdm'] = {'selected_subcarriers': np.arange(max_subcarries)}
 
         self.n_agents = len(self.ds.bs_pos)

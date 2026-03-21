@@ -37,11 +37,13 @@ class OptimalTransportCC(BaseOrchestrator):
         agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
+        weight_decay: float,
         lmb: float = 1.0,
     ):
         super().__init__(
             agents=agents,
             neighbors=neighbors,
+            weight_decay=weight_decay,
             lr=lr,
         )
         self.save_hyperparameters()
