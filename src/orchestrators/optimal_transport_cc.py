@@ -49,7 +49,7 @@ class OptimalTransportCC(BaseOrchestrator):
         # Network description
         self.hparams['edges'] = list(
             {
-                tuple(sorted((agent, neighbor)))
+                tuple(sorted((str(agent), str(neighbor))))
                 for agent in self.hparams['neighbors']
                 for neighbor in self.hparams['neighbors'][agent]
             }
@@ -60,8 +60,8 @@ class OptimalTransportCC(BaseOrchestrator):
             {
                 f'{i}_{j}': nn.ModuleDict(
                     {
-                        str(i): OptimalTransportLayer(self.agents[0].out_dim),
-                        str(j): OptimalTransportLayer(self.agents[0].out_dim),
+                        i: OptimalTransportLayer(self.agents['0'].out_dim),
+                        j: OptimalTransportLayer(self.agents['0'].out_dim),
                     }
                 )
                 for (i, j) in self.hparams['edges']
@@ -166,6 +166,12 @@ class OptimalTransportCC(BaseOrchestrator):
         )
 
         return private_outputs, total_loss
+
+    def on_train_epoch_end(self):
+        pass
+
+    def communicate(self):
+        pass
 
 
 if __name__ == '__main__':
