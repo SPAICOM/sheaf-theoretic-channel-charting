@@ -1,0 +1,5 @@
+_target_: src.SheafCC
+
+agents: null
+neighbors: null
+lr: 1e-3
