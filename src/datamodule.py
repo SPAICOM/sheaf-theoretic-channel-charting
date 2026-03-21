@@ -494,9 +494,7 @@ class CSIDataModule(l.LightningDataModule):
         )
         ch_kwargs['ofdm'] = {'selected_subcarriers': np.arange(max_subcarries)}
 
-        self.n_agents = (
-            len(self.ds) if isinstance(self.ds, (list, tuple)) else 1
-        )
+        self.n_agents = len(self.ds.bs_pos)
 
         self.rx_pos_all = (
             self.ds[0].rx_pos if len(self.ds.rx_pos) == 3 else self.ds.rx_pos

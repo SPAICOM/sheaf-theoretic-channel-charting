@@ -50,11 +50,9 @@ class BaseOrchestrator(l.LightningModule, ABC):
         #     batch = batch[0]
 
         outputs = {}
-        print(combined_batch.keys())
         for idx, agent in self.agents.items():
             # key = str(idx) if str(idx) in batch else idx
             idx = int(idx)
-            print(type(combined_batch[idx]), len(combined_batch[idx]))
             batch = combined_batch[idx]  # (embedding, label)
 
             out = agent(batch)

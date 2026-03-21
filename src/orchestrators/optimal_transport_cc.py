@@ -34,14 +34,16 @@ class OptimalTransportLayer(nn.Module):
 class OptimalTransportCC(BaseOrchestrator):
     def __init__(
         self,
-        agents: list[nn.Module],
+        agents: dict[int, nn.Module],
+        neighbors: dict[int, set[int]],
         lr: float,
-        L: torch.Tensor,
-        B: torch.Tensor,
-        n: int,
         lmb: float = 1.0,
     ):
-        super().__init__()
+        super().__init__(
+            agents=agents,
+            neighbors=neighbors,
+            lr=lr,
+        )
         self.save_hyperparameters()
 
         # Agents list

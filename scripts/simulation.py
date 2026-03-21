@@ -72,14 +72,16 @@ def main(cfg: DictConfig) -> None:
     for i in range(datamodule.n_agents):
         agents[i] = instantiate(cfg.model, in_dim=datamodule.feature_dim)
 
+    print(agents.keys())
+
     # ===================================================
     #                Define the Orchestrator
     # ===================================================
-    neighbors = defaultdict(list)
+    neighbors = defaultdict(set)
 
     for u, v in cfg.dataset.edge_set:
-        neighbors[u].append(v)
-        neighbors[v].append(u)  # remove this line if graph is directed
+        neighbors[u].add(v)
+        neighbors[v].add(u)  # remove this line if graph is directed
 
     neighbors = dict(neighbors)
 

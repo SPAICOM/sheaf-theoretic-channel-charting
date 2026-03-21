@@ -34,9 +34,14 @@ def main(cfg: DictConfig):
         print(k, len(ds))
 
     batch = next(iter(loader))
-
-    print(type(batch), len(batch), batch[0].keys())
-    dm.plot_bs_coverage()
+    example_agent = batch[0][0]
+    print(
+        len(example_agent),
+        example_agent[0].shape,
+        example_agent[1].shape,
+        example_agent[2].shape,
+        example_agent[2].shape,
+    )
 
     # batch = next(iter(dm.train_dataloader()))
     # print(batch)

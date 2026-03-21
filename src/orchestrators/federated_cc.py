@@ -18,6 +18,7 @@ class FederatedCC(BaseOrchestrator):
         )
 
         self._validate_agents_for_fedavg()
+        print(type(self.hparams.neighbors[0]))
 
     def _validate_agents_for_fedavg(self):
         agents = list(self.agents.values())
@@ -87,7 +88,7 @@ class FederatedCC(BaseOrchestrator):
 
         for idx_i, agent_i in agents.items():
             # Include self in neighborhood
-            neigh = self.hparams.neighbors[idx_i] | {idx_i}
+            neigh = self.hparams.neighbors[int(idx_i)] | {int(idx_i)}
 
             # Initialize accumulator
             avg_state = {
@@ -145,24 +146,24 @@ class FederatedCC(BaseOrchestrator):
             batch_size = batch[int(idx)][0].size(0)
             loss = agent.compute_loss(outputs[int(idx)])
 
-            # per-agent loss
             self.log(
                 f'{prefix}/loss_agent_{idx}',
                 loss,
-                on_step=False,
+                on_step=True,
                 on_epoch=True,
                 batch_size=batch_size,
+                prog_bar=False,
             )
 
             total_loss += loss
 
-        # Log the total_loss
         self.log(
-            f'{prefix}/total_loss_epoch',
+            f'{prefix}/total_loss',
             total_loss,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             batch_size=batch_size,
+            prog_bar=True,
         )
 
         return outputs, total_loss
