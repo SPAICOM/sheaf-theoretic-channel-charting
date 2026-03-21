@@ -16,3 +16,5 @@ edge_set:
   
 compute_channels:
   max_subcarriers: 512
+  ue_antenna:
+    shape: [4, 1]

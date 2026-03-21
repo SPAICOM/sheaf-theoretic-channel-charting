@@ -432,6 +432,7 @@ class CSIDataModule(l.LightningDataModule):
         shared_datasets = {}
 
         for base_station, _ in enumerate(self.ds):
+            print(self.bs_coords[base_station]['channels'].shape)
             local_datasets[base_station] = TrajectoryCSIDataset(
                 idx_to_neg_pos=self.idx_to_neg_pos,
                 mask=self.bs_coords[base_station]['mask'],
@@ -492,6 +493,10 @@ class CSIDataModule(l.LightningDataModule):
         max_subcarries = self.cfg.get('compute_channels').get(
             'max_subcarriers', 0
         )
+        ch_kwargs['ue_antenna']['shape'] = np.array(
+            ch_kwargs.get('ue_antenna', {}).get('shape', [1, 1])
+        )
+        print(ch_kwargs['ue_antenna']['shape'])
         ch_kwargs['ofdm'] = {'selected_subcarriers': np.arange(max_subcarries)}
 
         self.n_agents = len(self.ds.bs_pos)
@@ -598,12 +603,14 @@ class CSIDataModule(l.LightningDataModule):
             loaders[base_station] = DataLoader(
                 self.train_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
+                shuffle=True,
             )
 
         for bs_1, bs_2 in self.train_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
                 self.train_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
+                shuffle=True,
             )
 
         return CombinedLoader(loaders, mode='max_size_cycle')
