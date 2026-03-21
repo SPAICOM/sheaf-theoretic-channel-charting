@@ -92,7 +92,7 @@ class OptimalTransportCC(BaseOrchestrator):
             (i,j) : {
                 i: self.agents[i](batch[(int(i),int(j))][0]),
                 j: self.agents[j](batch[(int(i),int(j))][1])
-            }
+            } for (i,j) in self.hparams['edges']
         }
 
         total_loss = 0
@@ -113,7 +113,7 @@ class OptimalTransportCC(BaseOrchestrator):
 
             total_loss += private_loss
 
-        for i,j in self.edges:
+        for i, j in self.edges:
             transport_i = self.transport_layers[f"{i}_{j}"][str(i)](
                 shared_outputs[(i, j)][i]
             )
