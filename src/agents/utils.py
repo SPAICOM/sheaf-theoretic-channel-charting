@@ -55,10 +55,10 @@ class DistanceLayer(nn.Module):
         match self.distance_mode:
             case 'euclidean':
                 # Anchor expansion
-                z1 = z1.unsqueeze(1)                    # (B, 1, D)
+                z1 = z1.unsqueeze(1)  # (B, 1, D)
 
                 # Distance computation (batching + broadcasting)
-                dist = (z1 - z2).pow(2).sum(dim=-1)     # (B, K)
+                dist = (z1 - z2).pow(2).sum(dim=-1)  # (B, K)
 
                 # Loss aggregation
                 loss = dist.sum(dim=1).mean()
@@ -66,17 +66,17 @@ class DistanceLayer(nn.Module):
 
             case 'cosine':
                 # Normalize
-                z1 = F.normalize(z1, dim=-1)          # (B, D)
-                z2 = F.normalize(z2, dim=-1)          # (B, K, D)
+                z1 = F.normalize(z1, dim=-1)  # (B, D)
+                z2 = F.normalize(z2, dim=-1)  # (B, K, D)
 
                 # Anchor expansion
-                z1 = z1.unsqueeze(1)                  # (B, 1, D)
+                z1 = z1.unsqueeze(1)  # (B, 1, D)
 
                 # Cosine similarity for each positive
-                sim = (z1 * z2).sum(dim=-1)           # (B, K)
+                sim = (z1 * z2).sum(dim=-1)  # (B, K)
 
                 # Convert to cosine distance
-                dist = 1 - sim                        # (B, K)
+                dist = 1 - sim  # (B, K)
 
                 # Loss aggregation
                 loss = dist.sum(dim=1).mean()

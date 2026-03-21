@@ -47,20 +47,26 @@ class OptimalTransportCC(BaseOrchestrator):
         self.save_hyperparameters()
 
         # Network description
-        self.hparams['edges'] = list({
-            tuple(sorted((agent, neighbor)))
-            for agent in self.hparams['neighbors']
-            for neighbor in self.hparams['neighbors'][agent]
-        })
-        
+        self.hparams['edges'] = list(
+            {
+                tuple(sorted((agent, neighbor)))
+                for agent in self.hparams['neighbors']
+                for neighbor in self.hparams['neighbors'][agent]
+            }
+        )
+
         # Optimal transport module dictionary
-        self.transport_layers = nn.ModuleDict({
-            f"{i}_{j}": nn.ModuleDict({
-                str(i): OptimalTransportLayer(self.agents[0].out_dim),
-                str(j): OptimalTransportLayer(self.agents[0].out_dim),
-            })
-            for (i, j) in self.hparams['edges']
-        })
+        self.transport_layers = nn.ModuleDict(
+            {
+                f'{i}_{j}': nn.ModuleDict(
+                    {
+                        str(i): OptimalTransportLayer(self.agents[0].out_dim),
+                        str(j): OptimalTransportLayer(self.agents[0].out_dim),
+                    }
+                )
+                for (i, j) in self.hparams['edges']
+            }
+        )
 
     def _shared_eval(
         self,
@@ -79,7 +85,7 @@ class OptimalTransportCC(BaseOrchestrator):
                 The step type for logging purposes.
 
         Returns:
-            (outputs, total_loss) : tuple[
+            (private_outputs, total_loss) : tuple[
                                         dict[int, torch.Tensor],
                                         torch.Tensor,
                                     ]
@@ -89,13 +95,15 @@ class OptimalTransportCC(BaseOrchestrator):
 
         # Compute embeddings of the overlapping areas
         shared_outputs = {
-            (i,j) : {
-                i: self.agents[i](batch[(int(i),int(j))][0]),
-                j: self.agents[j](batch[(int(i),int(j))][1])
-            } for (i,j) in self.hparams['edges']
+            (i, j): {
+                i: self.agents[i](batch[(int(i), int(j))][0]),
+                j: self.agents[j](batch[(int(i), int(j))][1]),
+            }
+            for (i, j) in self.hparams['edges']
         }
 
-        total_loss = 0
+        total_private_loss = 0
+        total_transport_loss = 0
 
         # Compute the personalized loss for each agent
         for idx, agent in self.agents.items():
@@ -104,27 +112,49 @@ class OptimalTransportCC(BaseOrchestrator):
 
             self.log(
                 f'{prefix}/loss_agent_{idx}',
-                loss,
+                private_loss,
                 on_step=True,
                 on_epoch=True,
                 batch_size=batch_size,
                 prog_bar=False,
             )
 
-            total_loss += private_loss
+            total_private_loss += private_loss
 
+        self.log(
+            f'{prefix}/total_private_loss',
+            total_private_loss,
+            on_step=True,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+
+        # Compute the transport losses
         for i, j in self.edges:
-            transport_i = self.transport_layers[f"{i}_{j}"][str(i)](
+            transport_i = self.transport_layers[f'{i}_{j}'][str(i)](
                 shared_outputs[(i, j)][i]
             )
 
-            transport_j = self.transport_layers[f"{i}_{j}"][str(j)](
+            transport_j = self.transport_layers[f'{i}_{j}'][str(j)](
                 shared_outputs[(i, j)][j]
             )
 
+            # Edge specific transport loss
             transport_loss = torch.linalg.norm(transport_i - transport_j) ** 2
 
-            total_loss += self.hparams['lmb'] * transport_loss
+            total_transport_loss += transport_loss
+
+        self.log(
+            f'{prefix}/total_transport_loss',
+            total_transport_loss,
+            on_step=True,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+
+        total_loss = (
+            total_private_loss + self.hparams['lmb'] * total_transport_loss
+        )
 
         self.log(
             f'{prefix}/total_loss',
@@ -135,8 +165,7 @@ class OptimalTransportCC(BaseOrchestrator):
             prog_bar=True,
         )
 
-        return outputs, total_loss
-
+        return private_outputs, total_loss
 
 
 if __name__ == '__main__':
