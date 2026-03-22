@@ -2,6 +2,6 @@ _target_: src.OptimalTransportCC
 
 agents: null
 neighbors: null
-lmb: 1e-3
+lmb: 0.0
 lr: 1e-3
 weight_decay: 1e-3

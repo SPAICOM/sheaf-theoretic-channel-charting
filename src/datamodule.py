@@ -13,19 +13,25 @@ The DataModule follows the PyTorch Lightning lifecycle:
     prepare_data() -> setup() -> train/val/test_dataloader()
 """
 
+from collections import defaultdict
 from typing import Any
 
 import deepmimo as dm
 import lightning as l
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from matplotlib.patches import Circle, Rectangle
 from omegaconf import DictConfig, OmegaConf
 from scipy.spatial import cKDTree as KDTree
 from torch.utils.data import DataLoader
 
-from .dataset import SharedTrajectoryCSIDataset, TrajectoryCSIDataset
+from .dataset import (
+    SharedTrajectoryCSIDataset,
+    TrajectoryCSIDataset,
+    csi_to_realvec,
+)
 
 
 def _merge_defaults(
@@ -170,7 +176,14 @@ class CSIDataModule(l.LightningDataModule):
         self.coverage_area = self.cfg['coverage_area']
         self.trajectory_kind = self.cfg['trajectory_kind']
         self.rng = np.random.default_rng(seed)
-        self.kinds = ('linear', 'circular', 'random', 'full')
+        self.kinds = (
+            'linear',
+            'circular',
+            'random',
+            'full',
+            'neighbor_linear',
+            'neighbor_l',
+        )
 
         self.edge_set = [tuple(edge) for edge in self.cfg['edge_set']]
 
@@ -271,6 +284,62 @@ class CSIDataModule(l.LightningDataModule):
 
         return traj
 
+    def _neighbor_step(
+        self,
+        current: int,
+        heading: np.ndarray | None,
+        k: int = 20,
+        bias: float = 4.0,
+    ) -> tuple[int, np.ndarray | None]:
+        """
+        Take one step in the neighbor graph, optionally biased toward a heading.
+
+        Parameters
+        ----------
+        current : int
+            Local index (into rx_pos_all_masked) of the current position.
+        heading : np.ndarray | None
+            Unit vector (2,) for directional bias.
+            If None, the next neighbor is chosen uniformly at random.
+        k : int
+            Number of nearest neighbors to consider.
+        bias : float
+            Sharpness of the directional bias (higher → more collinear).
+
+        Returns
+        -------
+        next_local : int
+            Local index of the chosen next position.
+        new_heading : np.ndarray | None
+            Updated heading unit vector (tracks actual movement direction).
+            Returns None if input heading was None.
+        """
+        k_actual = min(k + 1, len(self.rx_pos_all_masked))
+        _, neigh = self.kdtree.query(
+            self.rx_pos_all_masked[current], k=k_actual
+        )
+        neigh = neigh[neigh != current]
+
+        if heading is None:
+            return int(self.rng.choice(neigh)), None
+
+        diffs = self.rx_pos_all_masked[neigh] - self.rx_pos_all_masked[current]
+        norms = np.linalg.norm(diffs, axis=1, keepdims=True) + 1e-8
+        cosines = (diffs / norms) @ heading
+        probs = np.exp(bias * cosines)
+        probs /= probs.sum()
+
+        chosen = int(self.rng.choice(neigh, p=probs))
+
+        # Update heading from the actual movement taken
+        new_dir = (
+            self.rx_pos_all_masked[chosen] - self.rx_pos_all_masked[current]
+        )
+        norm = np.linalg.norm(new_dir)
+        new_heading = new_dir / norm if norm > 1e-8 else heading
+
+        return chosen, new_heading
+
     # ----------------- Trajectory generators -----------------
     def _rand_anchor_xy(self) -> np.ndarray:
         """
@@ -303,14 +372,20 @@ class CSIDataModule(l.LightningDataModule):
         Parameters
         ----------
         kind : str
-            One of 'linear', 'circular', or 'random'.
+            One of:
+            - 'linear'          : straight line, snapped to grid
+            - 'circular'        : circular arc, snapped to grid
+            - 'random'          : continuous random walk, snapped to grid
+            - 'full'            : bounded random walk on k-NN neighbor graph
+            - 'neighbor_linear' : directionally-biased walk on neighbor graph
+            - 'neighbor_l'      : L-shaped walk (two segments, ~90° turn)
         T : int
-            Trajectory length.
+            Desired trajectory length (number of RX index steps).
 
         Returns
         -------
         np.ndarray
-            Array of RX indices representing the trajectory.
+            Array of global RX indices representing the trajectory.
         """
         match kind:
             case 'linear':
@@ -320,6 +395,7 @@ class CSIDataModule(l.LightningDataModule):
                 end = start + L * np.array([np.cos(ang), np.sin(ang)])
                 s = np.linspace(0.0, 1.0, T)
                 xy = start * (1 - s)[:, None] + end * s[:, None]
+                return self._snap(xy)
 
             case 'circular':
                 center = self._rand_anchor_xy()
@@ -330,6 +406,7 @@ class CSIDataModule(l.LightningDataModule):
                     [center[0] + r * np.cos(ang), center[1] + r * np.sin(ang)],
                     axis=1,
                 )
+                return self._snap(xy)
 
             case 'random':
                 xy = np.empty((T, 2), dtype=np.float64)
@@ -350,15 +427,62 @@ class CSIDataModule(l.LightningDataModule):
                     d = np.array([np.cos(ang), np.sin(ang)])
                     xy[t] = xy[t - 1] + step * d
                     prev_dir = d
+                return self._snap(xy)
+
             case 'full':
-                return self._generate_full_coverage()
+                # Bounded random walk on the k-NN neighbor graph.
+                # Visits exactly T feasible points without any coverage requirement.
+                N = len(self.rx_pos_all_masked)
+                current = int(self.rng.integers(0, N))
+                traj = np.empty(T, dtype=np.int64)
+                for t in range(T):
+                    traj[t] = self.valid_idxs[current]
+                    current, _ = self._neighbor_step(current, heading=None)
+                return traj
+
+            case 'neighbor_linear':
+                # Directionally-biased walk: prefer neighbors aligned with a
+                # persistent heading → quasi-straight trajectory on the graph.
+                N = len(self.rx_pos_all_masked)
+                current = int(self.rng.integers(0, N))
+                ang = float(self.rng.uniform(0, 2 * np.pi))
+                heading = np.array([np.cos(ang), np.sin(ang)])
+                traj = np.empty(T, dtype=np.int64)
+                for t in range(T):
+                    traj[t] = self.valid_idxs[current]
+                    current, heading = self._neighbor_step(current, heading)
+                return traj
+
+            case 'neighbor_l':
+                # L-shaped trajectory: two quasi-linear segments with a ~90°
+                # turn between them. The turn direction (left/right) is random.
+                N = len(self.rx_pos_all_masked)
+                current = int(self.rng.integers(0, N))
+                T1, T2 = T // 2, T - T // 2
+                ang1 = float(self.rng.uniform(0, 2 * np.pi))
+                sign = float(self.rng.choice([-1.0, 1.0]))
+                turn = sign * (np.pi / 2 + float(self.rng.normal(0, 0.26)))
+                headings = [
+                    np.array([np.cos(ang1), np.sin(ang1)]),
+                    np.array([np.cos(ang1 + turn), np.sin(ang1 + turn)]),
+                ]
+                traj = np.empty(T, dtype=np.int64)
+                offset = 0
+                for length, heading in zip([T1, T2], headings):
+                    for step in range(length):
+                        traj[offset + step] = self.valid_idxs[current]
+                        current, heading = self._neighbor_step(
+                            current, heading
+                        )
+                    offset += length
+                return traj
+
             case _:
                 raise RuntimeError(
-                    'The passed "kind" is not supported.'
-                    'Chose between {"linear", "circular", "random"}.'
+                    f'Trajectory kind "{kind}" is not supported. '
+                    'Choose from: "linear", "circular", "random", '
+                    '"full", "neighbor_linear", "neighbor_l".'
                 )
-
-        return self._snap(xy)
 
     def _pick_one(self, idxs: np.ndarray) -> int:
         """
@@ -378,11 +502,13 @@ class CSIDataModule(l.LightningDataModule):
             return -1
         return int(idxs[int(self.rng.integers(0, len(idxs)))])
 
-    def _shared_gen(self, num_users) -> tuple[dict[Any, Any], dict[Any, Any]]:
+    def _shared_gen(
+        self, num_users
+    ) -> tuple[dict[Any, Any], dict[Any, Any], dict[Any, Any]]:
         self.idx_to_neg_pos = {}
         for user_id in range(num_users):
             # Random trajectory length
-            T = int(self.rng.integers(self.T_min, self.T_max + 1))
+            T_requested = int(self.rng.integers(self.T_min, self.T_max + 1))
 
             # Randomly pick trajectory kind
             kind = (
@@ -392,41 +518,37 @@ class CSIDataModule(l.LightningDataModule):
             )
 
             # Generate trajectory of RX indices
-            rx_idxs = self._generate_one(kind, T)
-            max_idx = np.max(rx_idxs)
-            min_idx = np.min(rx_idxs)
-            for idx in rx_idxs:
-                min_point = min_idx + self.out_window
-                max_point = max_idx - self.out_window
-                if idx > min_point and idx < max_point:
-                    pos = np.clip(
-                        np.arange(
-                            idx - self.in_window, idx + self.in_window + 1
-                        ),
-                        a_min=0,
-                        a_max=max_idx,
-                    )
-                    pos = pos[pos != idx]
-                    neg = np.clip(
-                        np.concat(
-                            [
-                                np.arange(
-                                    idx - self.out_window, idx - self.in_window
-                                ),
-                                np.arange(
-                                    idx + self.in_window + 1,
-                                    idx + self.out_window + 1,
-                                ),
-                            ]
-                        ),
-                        a_min=0,
-                        a_max=max_idx,
-                    )
-                    neg = neg[neg != idx]
-                    self.idx_to_neg_pos[(user_id, idx)] = {
-                        'pos': pos,
-                        'neg': neg,
-                    }
+            rx_idxs = self._generate_one(kind, T_requested)
+            T_actual = len(rx_idxs)
+
+            for t in range(T_actual):
+                # Skip trajectory endpoints (within out_window of start/end)
+                if t < self.out_window or t >= T_actual - self.out_window:
+                    continue
+
+                anchor_rx = rx_idxs[t]
+
+                # Positives: trajectory-time-adjacent steps within in_window
+                pos_left = rx_idxs[max(0, t - self.in_window) : t]
+                pos_right = rx_idxs[t + 1 : t + self.in_window + 1]
+                pos = np.concatenate([pos_left, pos_right])
+
+                # Negatives: steps outside in_window but within out_window
+                neg_left = rx_idxs[
+                    max(0, t - self.out_window) : max(0, t - self.in_window)
+                ]
+                neg_right = rx_idxs[
+                    t + self.in_window + 1 : t + self.out_window + 1
+                ]
+                neg = np.concatenate([neg_left, neg_right])
+
+                if len(pos) == 0 or len(neg) == 0:
+                    continue
+
+                self.idx_to_neg_pos[(user_id, anchor_rx)] = {
+                    'pos': pos,
+                    'neg': neg,
+                }
 
         local_datasets = {}
         shared_datasets = {}
@@ -456,7 +578,7 @@ class CSIDataModule(l.LightningDataModule):
                 channels_bs_2=channels_bs_2,
             )
 
-        return local_datasets, shared_datasets
+        return local_datasets, shared_datasets, self.idx_to_neg_pos.copy()
 
     def setup(
         self,
@@ -503,7 +625,7 @@ class CSIDataModule(l.LightningDataModule):
             self.ds[0].rx_pos if len(self.ds.rx_pos) == 3 else self.ds.rx_pos
         )
         self.valid_rx_pos = {}
-        union_mask = np.zeros_like(self.rx_pos_all.shape[0], dtype=bool)
+        union_mask = np.zeros(self.rx_pos_all.shape[0], dtype=bool)
 
         # TODO: adjust for a single BS
         self.bs_coords = {}
@@ -541,9 +663,8 @@ class CSIDataModule(l.LightningDataModule):
                 'channels': base_station.channels,
                 'coverage_radius': float(r_max),
             }
-            union_mask = union_mask + mask
+            union_mask |= mask
 
-        union_mask = union_mask.astype(np.bool)
         self.valid_idxs = np.where(union_mask)[0]
         self.rx_pos_all_masked = self.rx_pos_all[self.valid_idxs]
         self.rx_pos_all_masked = self.rx_pos_all_masked[:, :2]
@@ -567,22 +688,26 @@ class CSIDataModule(l.LightningDataModule):
         # ---------------------------------------------------------------
 
         # Training dataset
-        self.train_local_dataset, self.train_shared_dataset = self._shared_gen(
-            train_num_users
-        )
+        (
+            self.train_local_dataset,
+            self.train_shared_dataset,
+            self.train_traj_dict,
+        ) = self._shared_gen(train_num_users)
 
         # Test dataset
-        self.test_local_dataset, self.test_shared_dataset = self._shared_gen(
-            test_num_users
-        )
+        (
+            self.test_local_dataset,
+            self.test_shared_dataset,
+            self.test_traj_dict,
+        ) = self._shared_gen(test_num_users)
 
         # Validation dataset
-        self.val_local_dataset, self.val_shared_dataset = self._shared_gen(
-            val_num_users
+        self.val_local_dataset, self.val_shared_dataset, self.val_traj_dict = (
+            self._shared_gen(val_num_users)
         )
 
-        tmp_datasets = self.val_local_dataset.copy()
-        self.feature_dim = next(iter(tmp_datasets[0]))[0].shape[0]
+        sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs[0]])
+        self.feature_dim = csi_to_realvec(sample_ch).shape[0]
 
         return None
 
@@ -744,6 +869,187 @@ class CSIDataModule(l.LightningDataModule):
         plt.close()
 
         print(f'Coverage plot saved to: {plot_name}')
+
+    def plot_trajectories(
+        self,
+        n: int,
+        stage: str = 'train',
+        plot_name: str | None = None,
+        show_map: bool = True,
+    ) -> None:
+        """
+        Plot the first n trajectories from a stage dataset over the BS coverage area.
+
+        Parameters
+        ----------
+        n : int
+            Number of trajectories to plot.
+        stage : str
+            One of 'train', 'val', 'test'.
+        plot_name : str | None
+            Output file name.
+            Defaults to '<scenario>_<stage>_trajectories.png'.
+        show_map : bool
+            If True (default), render the DeepMIMO scenario map (buildings,
+            terrain, etc.) as a 2D background layer.  Falls back gracefully
+            when the scene is unavailable.
+        """
+        assert stage in ('train', 'val', 'test'), (
+            "stage must be one of 'train', 'val', 'test'"
+        )
+
+        # Select the local dataset dict for the requested stage
+        local_datasets = {
+            'train': self.train_local_dataset,
+            'val': self.val_local_dataset,
+            'test': self.test_local_dataset,
+        }[stage]
+
+        # Use the unfiltered union-wide trajectory dict for this stage
+        idx_to_neg_pos = {
+            'train': self.train_traj_dict,
+            'val': self.val_traj_dict,
+            'test': self.test_traj_dict,
+        }[stage]
+
+        # Group rx indices per user, preserving trajectory insertion order
+        user_points: dict[int, list[int]] = defaultdict(list)
+        for user_id, rx_idx in idx_to_neg_pos.keys():
+            user_points[user_id].append(rx_idx)
+
+        # Take the first n users (in insertion order)
+        selected_users = list(user_points.keys())[:n]
+        actual_n = len(selected_users)
+
+        # --- Figure setup ---
+        rx_xy = self.rx_pos_all[:, :2]
+        xmin, ymin = rx_xy.min(axis=0)
+        xmax, ymax = rx_xy.max(axis=0)
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        # Render scenario map as background layer
+        has_map = False
+        if show_map:
+            scene = getattr(self.ds, 'scene', None) or getattr(
+                self.ds[0], 'scene', None
+            )
+            if scene is not None:
+                try:
+                    n_patches_before = len(ax.patches)
+                    scene.plot(proj_3D=False, ax=ax, title=False, legend=False)
+                    has_map = True
+                    # Convert every scene patch to grayscale with low alpha so
+                    # it reads as an unobtrusive background layer.
+                    for patch in ax.patches[n_patches_before:]:
+                        r, g, b, _ = patch.get_facecolor()
+                        gray = 0.299 * r + 0.587 * g + 0.114 * b
+                        patch.set_facecolor((gray, gray, gray, 0.05))
+                        patch.set_edgecolor('none')
+                except Exception:
+                    pass  # scene unavailable for this scenario — skip silently
+
+        # RX grid bounding box — transparent face when map is shown so the
+        # scene image stays visible; white otherwise.
+        grid_rect = Rectangle(
+            (xmin, ymin),
+            xmax - xmin,
+            ymax - ymin,
+            facecolor='none' if has_map else 'white',
+            edgecolor='black',
+            linewidth=1.5,
+        )
+        ax.add_patch(grid_rect)
+
+        # Draw BS coverage circles
+        bs_colors = plt.cm.tab10.colors
+        legend_handles = []
+        for bs_id, base_station in enumerate(self.ds):
+            color = bs_colors[bs_id % len(bs_colors)]
+            bs_pos = base_station.bs_pos.squeeze()
+            center = bs_pos[:2]
+            radius = self.bs_coords[bs_id]['coverage_radius']
+
+            circle = Circle(
+                center,
+                radius,
+                edgecolor=color,
+                facecolor=color,
+                alpha=0.45,
+                linewidth=2,
+            )
+            circle.set_clip_path(grid_rect)
+            ax.add_patch(circle)
+
+            handle = ax.scatter(
+                center[0],
+                center[1],
+                marker='^',
+                s=160,
+                color=color,
+                edgecolor='black',
+                linewidth=0.5,
+                label=f'BS {bs_id}',
+                zorder=5,
+            )
+            legend_handles.append(handle)
+
+        # Assign a distinct color to each trajectory
+        traj_colors = [
+            plt.colormaps['hsv'](i / max(actual_n, 1)) for i in range(actual_n)
+        ]
+
+        for i, user_id in enumerate(selected_users):
+            # rx_idxs are already in trajectory order (insertion order preserved)
+            rx_idxs = user_points[user_id]
+            positions = self.rx_pos_all[rx_idxs, :2]
+            color = traj_colors[i]
+
+            (handle,) = ax.plot(
+                positions[:, 0],
+                positions[:, 1],
+                '-o',
+                color=color,
+                markersize=3,
+                linewidth=1.5,
+                label=f'Traj {user_id}',
+                alpha=0.85,
+                zorder=4,
+            )
+            legend_handles.append(handle)
+            # Mark trajectory start
+            ax.scatter(
+                positions[0, 0],
+                positions[0, 1],
+                s=60,
+                color=color,
+                edgecolor='black',
+                linewidth=0.6,
+                zorder=6,
+            )
+
+        # Re-enforce limits — scene.plot() may have changed them
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        ax.set_aspect('equal')
+        ax.set_xlabel('x [m]')
+        ax.set_ylabel('y [m]')
+        ax.set_title(f'First {actual_n} trajectories — {stage} stage')
+        # Use only our handles so scene labels (terrain, buildings…) are excluded
+        ax.legend(
+            handles=legend_handles, loc='upper right', fontsize=7, ncol=2
+        )
+        plt.tight_layout()
+
+        plot_name = (
+            f'{self.cfg["scenario"]}_{stage}_trajectories.png'
+            if plot_name is None
+            else plot_name
+        )
+        plt.savefig(plot_name, dpi=300)
+        plt.close()
+
+        print(f'Trajectory plot saved to: {plot_name}')
 
 
 if __name__ == '__main__':
