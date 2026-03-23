@@ -160,7 +160,7 @@ class SheafCC(BaseOrchestrator):
             aligned_j = shared_outputs[(i,j)][j] @ self.local_reference_frames[j].to(self.device).T
 
             # Edge specific transport loss
-            alignment_loss = torch.linalg.norm(aligned_i - aligned_j) ** 2
+            alignment_loss = (torch.linalg.norm(aligned_i - aligned_j, dim=1) ** 2).mean()
 
             total_alignment_loss += alignment_loss
 

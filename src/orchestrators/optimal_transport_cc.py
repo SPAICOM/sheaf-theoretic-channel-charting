@@ -148,7 +148,7 @@ class OptimalTransportCC(BaseOrchestrator):
             )
 
             # Edge specific transport loss
-            transport_loss = torch.linalg.norm(transport_i - transport_j) ** 2
+            transport_loss = (torch.linalg.norm(transport_i - transport_j, dim=1) ** 2).mean()
 
             total_transport_loss += transport_loss
 

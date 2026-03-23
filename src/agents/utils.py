@@ -60,9 +60,8 @@ class DistanceLayer(nn.Module):
                 # Distance computation (batching + broadcasting)
                 dist = (z1 - z2).pow(2).sum(dim=-1)  # (B, K)
 
-                # Loss aggregation
-                loss = dist.sum(dim=1).mean()
-                return loss
+                # Sum over positives/negatives per anchor → (B,)
+                return dist.sum(dim=1)
 
             case 'cosine':
                 # Normalize
@@ -75,12 +74,9 @@ class DistanceLayer(nn.Module):
                 # Cosine similarity for each positive
                 sim = (z1 * z2).sum(dim=-1)  # (B, K)
 
-                # Convert to cosine distance
+                # Convert to cosine distance, sum over positives/negatives → (B,)
                 dist = 1 - sim  # (B, K)
-
-                # Loss aggregation
-                loss = dist.sum(dim=1).mean()
-                return loss
+                return dist.sum(dim=1)
 
             case _:
                 return None
@@ -147,24 +143,23 @@ class LossLayer(nn.Module):
         """
         match self.loss_mode:
             case 'contrastive':
-                # Contrastive loss
+                # Contrastive loss: per-sample (B,) distances
                 assert y is not None
                 y = y.float()
 
-                d = self.dist_layer(z1, z2)
+                d = self.dist_layer(z1, z2)  # (B,)
                 dP = y * d.pow(2)
                 dN = (1 - y) * torch.clamp(self.margin - d, min=0.0).pow(2)
 
-                L = dP + dN
+                L = dP + dN  # (B,)
 
             case 'triplet':
-                # Triplet loss
-
+                # Triplet loss: per-sample clamp, then mean
                 assert z3 is not None
 
-                dAP = self.dist_layer(z1, z2)
-                dAN = self.dist_layer(z1, z3)
-                L = torch.clamp(dAP - dAN + self.margin, min=0.0)
+                dAP = self.dist_layer(z1, z2)  # (B,)
+                dAN = self.dist_layer(z1, z3)  # (B,)
+                L = torch.clamp(dAP - dAN + self.margin, min=0.0)  # (B,)
 
             case _:
                 raise RuntimeError(
