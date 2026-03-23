@@ -605,6 +605,9 @@ class CSIDataModule(l.LightningDataModule):
         None
         """
 
+        if getattr(self, '_setup_done', False):
+            return
+
         # Load DeepMIMO scenario
         self.ds = dm.load(self.cfg['scenario'])
 
@@ -709,6 +712,7 @@ class CSIDataModule(l.LightningDataModule):
         sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs[0]])
         self.feature_dim = csi_to_realvec(sample_ch).shape[0]
 
+        self._setup_done = True
         return None
 
     def train_dataloader(self) -> CombinedLoader:
