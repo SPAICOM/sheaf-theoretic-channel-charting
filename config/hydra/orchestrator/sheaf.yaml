@@ -1,7 +1,0 @@
-_target_: src.SheafCC
-
-agents: null
-neighbors: null
-lmb: 1e-1
-lr: 1e-3
-weight_decay: 1e-3

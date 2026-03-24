@@ -2,6 +2,8 @@ _target_: src.OptimalTransportCC
 
 agents: null
 neighbors: null
-lmb: 0.0
+lmb_in: 0.0
+lmb_max: 1e-1
+lmb_schedule: cosine
 lr: 1e-3
 weight_decay: 1e-3

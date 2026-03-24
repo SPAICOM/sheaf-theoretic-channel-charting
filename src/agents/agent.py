@@ -12,6 +12,7 @@ This module defines:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.agents.utils import SiameseLayer
 
@@ -206,8 +207,9 @@ class Agent(nn.Module):
         Output embedding dimension.
     num_hidden_layers : int, default=6
         Number of hidden layers in encoder/decoder.
-    autoenc : bool, default=False
-        Whether to include a decoder and reconstruct inputs.
+    use_decoder : bool, default=True
+        Whether to include the reconstruction loss (normalised MSE on the
+        anchor) on top of the triplet loss.
     margin : float, default=1.0
         Margin parameter used in Siamese losses.
     lr : float, default=1e-3
@@ -221,7 +223,7 @@ class Agent(nn.Module):
         loss_mode: str,
         out_dim: int = 2,
         num_hidden_layers: int = 6,
-        autoenc: bool = False,
+        use_decoder: bool = True,
         margin: float = 1.0,
         lr: float = 1e-3,
         **kwargs,
@@ -236,7 +238,7 @@ class Agent(nn.Module):
             'Provide a valid layer mode'
         )
 
-        self.autoenc = autoenc
+        self.use_decoder = use_decoder
         self.distance_mode = distance_mode
         self.loss_mode = loss_mode
 
@@ -246,54 +248,23 @@ class Agent(nn.Module):
         self.margin = margin
         self.lr = lr
 
-        # ----------------------------------------------------------
-        # Architecture selection
-        # ----------------------------------------------------------
+        self.encoder = Encoder(
+            in_dim=in_dim,
+            out_dim=out_dim,
+            num_hidden_layers=num_hidden_layers,
+        )
 
-        if autoenc:
-            # In autoencoder mode the model reconstructs the input
-            assert in_dim == out_dim, (
-                'Unsolvable design choices! Provide a combination for in'
-                'and out dimension coherent with the chosen architecture'
-            )
+        self.decoder = Decoder(
+            in_dim=out_dim,
+            out_dim=in_dim,
+            num_hidden_layers=num_hidden_layers,
+        ) if use_decoder else None
 
-            # Encoder compresses input to 2D embedding
-            self.encoder = Encoder(
-                in_dim=in_dim,
-                out_dim=out_dim,
-                num_hidden_layers=num_hidden_layers,
-            )
-
-            # Decoder reconstructs the original feature space
-            self.decoder = Decoder(
-                in_dim=out_dim,
-                out_dim=in_dim,
-                num_hidden_layers=num_hidden_layers,
-            )
-
-            # Siamese loss layer
-            self.siamese = SiameseLayer(
-                loss_mode=loss_mode,
-                distance_mode=distance_mode,
-                margin=margin,
-            )
-
-        else:
-            # Standard Siamese embedding network
-            self.encoder = Encoder(
-                in_dim=in_dim,
-                out_dim=out_dim,
-                num_hidden_layers=num_hidden_layers,
-            )
-
-            # No reconstruction
-            self.decoder = nn.Identity()
-
-            self.siamese = SiameseLayer(
-                loss_mode=loss_mode,
-                distance_mode=distance_mode,
-                margin=margin,
-            )
+        self.siamese = SiameseLayer(
+            loss_mode=loss_mode,
+            distance_mode=distance_mode,
+            margin=margin,
+        )
 
     def forward(
         self,
@@ -339,24 +310,25 @@ class Agent(nn.Module):
             xA, xP, xN, y = batch
 
             # Compute embeddings
-            embA = self.decoder(self.encoder(xA))
-            embP = self.decoder(self.encoder(xP))
+            embA = self.encoder(xA)
+            embP = self.encoder(xP)
 
             # Negative sample may be None in contrastive mode
-            embN = self.decoder(self.encoder(xN)) if xN is not None else None
+            embN = self.encoder(xN) if xN is not None else None
 
             out = (embA, embP, embN, y)
 
         else:
-            out = self.decoder(self.encoder(batch))
+            out = self.encoder(batch)
         return out
 
     def compute_loss(
         self,
         batch,
+        embeddings,
     ) -> torch.Tensor:
         """
-        Compute the agent-specific loss.
+        Compute the agent-specific loss: triplet loss + reconstruction loss.
 
         Each agent defines its own objective function, enabling heterogeneous
         learning strategies within the same system.
@@ -364,27 +336,42 @@ class Agent(nn.Module):
         Parameters
         ----------
         batch : tuple
-            Batch containing:
+            Raw input batch containing:
+            - xA : torch.Tensor
+                Anchor samples (used as reconstruction target when
+                use_decoder=True).
+            - xP : torch.Tensor
+                Positive samples (unused here).
+            - xN : torch.Tensor | None
+                Negative samples (unused here).
+            - y : torch.Tensor
+                Target tensor (unused here, taken from embeddings).
+        embeddings : tuple
+            Pre-computed encoder outputs containing:
             - embA : torch.Tensor
-                Embeddings of Anchor samples.
+                Embeddings of anchor samples.
             - embP : torch.Tensor
-                Embeddings of Positive samples.
+                Embeddings of positive samples.
             - embN : torch.Tensor | None
-                Embeddings of Negative samples
-                (None when using contrastive loss).
+                Embeddings of negative samples.
             - y : torch.Tensor
                 Target tensor used by the Siamese loss.
 
-
         Returns
         -------
-        torch.Tensor
-            Scalar tensor representing the loss.
+        dict[str, torch.Tensor]
+            Dictionary with keys 'triplet_loss' and, when use_decoder=True,
+            'rec_loss'.
         """
-        embA, embP, embN, y = batch
-        loss = self.siamese(z1=embA, z2=embP, z3=embN, y=y)
+        xA, _, _, _ = batch
+        embA, embP, embN, y = embeddings
 
-        return loss
+        losses = {'triplet_loss': self.siamese(z1=embA, z2=embP, z3=embN, y=y)}
+
+        if self.use_decoder:
+            losses['rec_loss'] = F.mse_loss(self.decoder(embA), xA) / self.in_dim
+
+        return losses
 
 
 if __name__ == '__main__':

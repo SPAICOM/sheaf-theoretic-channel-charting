@@ -1,6 +1,6 @@
 _target_: src.Agent
 
-autoenc: false
+use_decoder: true
 distance_mode: euclidean
 loss_mode: triplet
 out_dim: 2

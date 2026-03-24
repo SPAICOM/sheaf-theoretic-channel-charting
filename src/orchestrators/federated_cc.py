@@ -142,26 +142,30 @@ class FederatedCC(BaseOrchestrator):
         outputs = self(batch)
         total_loss = 0
 
+        on_step = True if prefix == "train" else False
+
         # Compute the personalized loss for each agent
         for idx, agent in self.agents.items():
             batch_size = batch[int(idx)][0].size(0)
-            loss = agent.compute_loss(outputs[int(idx)])
+            agent_losses = agent.compute_loss(batch[int(idx)], outputs[int(idx)])
 
-            self.log(
-                f'{prefix}/loss_agent_{idx}',
-                loss,
-                on_step=True,
-                on_epoch=True,
-                batch_size=batch_size,
-                prog_bar=False,
-            )
+            for loss_name, loss_val in agent_losses.items():
+                self.log(
+                    f'{prefix}/{loss_name}_agent_{idx}',
+                    loss_val,
+                    on_step=on_step,
+                    on_epoch=True,
+                    batch_size=batch_size,
+                    prog_bar=False,
+                )
 
+            loss = sum(agent_losses.values())
             total_loss += loss
 
         self.log(
             f'{prefix}/total_loss',
             total_loss,
-            on_step=True,
+            on_step=on_step,
             on_epoch=True,
             batch_size=batch_size,
             prog_bar=True,

@@ -12,4 +12,22 @@ format:
     uvx ruff format .
 
 # Run formatting and linting (CI-style target)
-clean: format check 
+clean: format check
+
+# Run simulations
+sim := "uv run scripts/simulation.py"
+
+fed:
+    {{sim}} orchestrator=federated
+
+ot:
+    {{sim}} orchestrator=optimal_transport
+
+fb:
+    {{sim}} orchestrator=flat_bundle
+
+cs:
+    {{sim}} orchestrator=cover_sheaf
+
+bun:
+    {{sim}} orchestrator=bundle

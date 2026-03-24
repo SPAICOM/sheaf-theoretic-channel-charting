@@ -2,12 +2,12 @@ defaults:
   - _self_
   - dataset: city_3_houston_3p5
   - model: siameseNN
-  - orchestrator: fedCC
+  - orchestrator: cover_sheaf
 
 logger:
   _target_: lightning.pytorch.loggers.WandbLogger
   project: sheaf_cc
-  name: ${now:%Y-%m-%d}_${now:%H-%M-%S}
+  name: ${hydra:runtime.choices.orchestrator}_${now:%Y-%m-%d}_${now:%H-%M-%S}
   save_dir: checkpoints
   log_model: false
 
@@ -29,14 +29,14 @@ callbacks:
 
   checkpoint:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    monitor: validation/total_loss_epoch
+    monitor: validation/total_loss
     mode: min
     save_top_k: 1
     save_last: true
 
   early_stopping:
     _target_: lightning.pytorch.callbacks.EarlyStopping
-    monitor: validation/total_loss_epoch
+    monitor: validation/total_loss
     patience: 5
     mode: min
 
