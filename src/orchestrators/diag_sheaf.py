@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from src.orchestrators.base_orchestrator import BaseOrchestrator
 
 
-class FlatBundleCC(BaseOrchestrator):
+class DiagSheafCC(BaseOrchestrator):
     def __init__(
         self,
         agents: dict[int, nn.Module],
@@ -17,6 +17,7 @@ class FlatBundleCC(BaseOrchestrator):
         lmb_min: float = 1e-3,
         lmb_max: float = 1.0,
         lmb_schedule: str = 'cosine',
+        lmb_log_barr: float = 1e-3,
     ):
         super().__init__(
             agents=agents,
@@ -24,8 +25,8 @@ class FlatBundleCC(BaseOrchestrator):
             weight_decay=weight_decay,
             lr=lr,
         )
-        
         self._lmb = lmb_min
+        self.hparams['lmb_log_barr'] = lmb_log_barr
 
         # Network description
         self.hparams['edges'] = list(
@@ -36,10 +37,11 @@ class FlatBundleCC(BaseOrchestrator):
             }
         )
 
-        # Optimal transport module dictionary
-        self.local_reference_frames = {
-            agent: torch.eye(self.agents[agent].out_dim, device=self.device)
-            for agent in self.agents
+        # One orthogonal map per edge, initialised to identity
+        d = self.agents[list(self.agents.keys())[0]].out_dim
+        self.diagonal_maps = {
+            edge: torch.eye(d, device=self.device)
+            for edge in self.hparams['edges']
         }
 
     def on_train_epoch_start(self):
@@ -66,57 +68,41 @@ class FlatBundleCC(BaseOrchestrator):
 
     @torch.no_grad()
     def on_train_epoch_end(self):
-        """Alignment step performed via Kabsch algorithm on cross-covariance terms
-        computed over the full shared dataset (all examples, not just one batch).
+        """Update each edge's diagonal map via closed form solution to the defining convex problem
         """
-
         train_shared_dataset = self.trainer.datamodule.train_shared_dataset
 
-        # Accumulate embeddings for both agents over the full shared dataset
-        shared_embeddings = {}
+        diagonal_maps = {}
         for edge_key, dataset in train_shared_dataset.items():
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
             edge = tuple(sorted((bs1_str, bs2_str)))
 
+            # Accumulate embeddings over the full shared dataset
             embs_1, embs_2 = [], []
             for H_1, H_2, _ in loader:
                 H_1, H_2 = H_1.to(self.device), H_2.to(self.device)
                 embs_1.append(self.agents[bs1_str](H_1, triplet_mode=False))
                 embs_2.append(self.agents[bs2_str](H_2, triplet_mode=False))
 
-            shared_embeddings[edge] = {
-                bs1_str: torch.cat(embs_1, dim=0),  # (N, d)
-                bs2_str: torch.cat(embs_2, dim=0),  # (N, d)
-            }
+            Z_i = torch.cat(embs_1, dim=0)  # (N, d)
+            Z_j = torch.cat(embs_2, dim=0)  # (N, d)
 
-        # Compute cross-covariance and solve alignment via Kabsch algorithm
-        local_reference_frames_temp = {}
-        for agent_str in self.agents:
-            d = self.agents[agent_str].out_dim
-            cross_cov = torch.zeros((d, d), device=self.device)
+            # Column-wise inner products 
+            a = torch.sum(Z_i * Z_j, dim=0)  # (d,)
+            b = torch.sum(Z_j * Z_j, dim=0)  # (d,)
 
-            for edge in self.hparams['edges']:
-                if agent_str not in edge:
-                    continue
-                neighbor_str = edge[1] if edge[0] == agent_str else edge[0]
+            # Closed-form with log barrier
+            delta = a**2 + 2 * self.hparams['lmb_log_barr'] * b
+            d = (a + torch.sqrt(delta)) / (2 * b)
 
-                Z_a = shared_embeddings[edge][agent_str]     # (N, d)
-                Z_n = shared_embeddings[edge][neighbor_str]  # (N, d)
-                R_n = self.local_reference_frames[neighbor_str].to(self.device)
+            # Diagonal matrix
+            D = torch.diag(d)
 
-                # Aggregate cross-covariance: Z_a^T @ (Z_n @ R_n^T)  → (d, d)
-                cross_cov += Z_a.T @ (Z_n @ R_n.T)
+            diagonal_maps_temp[edge] = D
 
-            # Kabsch polar factor (closest proper rotation to cross_cov)
-            U, _, Vt = torch.linalg.svd(cross_cov)
-            Sigma_tilde = torch.ones(U.shape[1], device=self.device)
-            Sigma_tilde[-1] = torch.linalg.det(U @ Vt)
-            local_reference_frames_temp[agent_str] = U @ torch.diag(Sigma_tilde) @ Vt
-
-        # Update local reference frames
-        self.local_reference_frames = local_reference_frames_temp
+        self.diagonal_maps = diagonal_maps_temp
 
     def _shared_eval(
         self,
@@ -186,11 +172,12 @@ class FlatBundleCC(BaseOrchestrator):
 
         # Compute the alignment losses
         for i, j in self.hparams['edges']:
-            aligned_i = shared_outputs[(i,j)][i] @ self.local_reference_frames[i].to(self.device).T
-            aligned_j = shared_outputs[(i,j)][j] @ self.local_reference_frames[j].to(self.device).T
+            emb_i = shared_outputs[(i, j)][i]   # (B, d)
+            emb_j = shared_outputs[(i, j)][j]   # (B, d)
+            O_ij = self.diagonal_maps[(i, j)].to(self.device)  # (d, d)
 
-            # Edge specific transport loss
-            alignment_loss = (torch.linalg.norm(aligned_i - aligned_j, dim=1) ** 2).mean()
+            # Alignment: ||emb_i - emb_j @ O_ij^T||² per sample
+            alignment_loss = (torch.linalg.norm(emb_i - emb_j @ O_ij.T, dim=1) ** 2).mean()
 
             total_alignment_loss += alignment_loss
 
