@@ -183,16 +183,16 @@ class BaseOrchestrator(l.LightningModule, ABC):
     def configure_optimizers(self) -> dict[str, object]:
         """Configure the optimizer used for training.
 
-        Uses the AdamW optimizer with the learning rate defined in
+        Uses the Adam optimizer with the learning rate defined in
         ``self.hparams.lr``.
 
         Returns:
             dict[str, object]: A dictionary containing the optimizer used by
             the training loop. The dictionary has the following key:
 
-            - "optimizer": The instantiated AdamW optimizer.
+            - "optimizer": The instantiated Adam optimizer.
         """
-        optimizer = torch.optim.AdamW(
+        optimizer = torch.optim.Adam(
             self.parameters(),
             lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,

@@ -67,6 +67,9 @@ def main(cfg: DictConfig) -> None:
     datamodule = CSIDataModule(cfg.dataset, seed=cfg.seed)
     datamodule.prepare_data()
     datamodule.setup('fit')
+
+    # datamodule.plot_trajectories(n=4, stage="train", plot_name="prova")
+
     agents = {}
 
     for i in range(datamodule.n_agents):

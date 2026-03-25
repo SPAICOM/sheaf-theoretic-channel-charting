@@ -105,7 +105,7 @@ class FederatedCC(BaseOrchestrator):
 
             # Average
             for k in avg_state:
-                avg_state[k] /= len(neigh)
+                avg_state[k] = avg_state[k].float() / len(neigh)
 
             # Store result (do NOT load yet)
             new_states[idx_i] = avg_state

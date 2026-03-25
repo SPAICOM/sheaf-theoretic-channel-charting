@@ -14,7 +14,7 @@ class BundleCC(BaseOrchestrator):
         neighbors: dict[int, set[int]],
         lr: float,
         weight_decay: float,
-        lmb_in: float = 1e-3,
+        lmb_min: float = 1e-3,
         lmb_max: float = 1.0,
         lmb_schedule: str = 'cosine',
     ):
@@ -24,7 +24,7 @@ class BundleCC(BaseOrchestrator):
             weight_decay=weight_decay,
             lr=lr,
         )
-        self._lmb = lmb_in
+        self._lmb = lmb_min
 
         # Network description
         self.hparams['edges'] = list(
@@ -47,18 +47,18 @@ class BundleCC(BaseOrchestrator):
         max_epochs = self.trainer.max_epochs
         t = self.current_epoch / max(max_epochs - 1, 1)  # normalized progress [0, 1]
 
-        lmb_in = self.hparams['lmb_in']
+        lmb_min = self.hparams['lmb_min']
         lmb_max = self.hparams['lmb_max']
         schedule = self.hparams['lmb_schedule']
 
         if t == 0.0:
-            self._lmb = lmb_in
+            self._lmb = lmb_min
         elif schedule == 'linear':
-            self._lmb = lmb_in + (lmb_max - lmb_in) * t
+            self._lmb = lmb_min + (lmb_max - lmb_min) * t
         elif schedule == 'exponential':
-            self._lmb = lmb_in * (lmb_max / lmb_in) ** t
+            self._lmb = lmb_min * (lmb_max / lmb_min) ** t
         elif schedule == 'cosine':
-            self._lmb = lmb_in + (lmb_max - lmb_in) * (1 - math.cos(math.pi * t)) / 2
+            self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
         else:
             raise ValueError(f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine.")
 
@@ -96,9 +96,10 @@ class BundleCC(BaseOrchestrator):
 
             # Orthogonal Procrustes: closest proper rotation to cross_cov
             U, _, Vt = torch.linalg.svd(cross_cov)
-            Sigma_tilde = torch.ones(U.shape[1], device=self.device)
-            Sigma_tilde[-1] = torch.linalg.det(U @ Vt)
-            orthogonal_maps_temp[edge] = U @ torch.diag(Sigma_tilde) @ Vt
+            # Sigma_tilde = torch.ones(U.shape[1], device=self.device)
+            # Sigma_tilde[-1] = torch.linalg.det(U @ Vt)
+            # orthogonal_maps_temp[edge] = U @ torch.diag(Sigma_tilde) @ Vt
+            orthogonal_maps_temp[edge] = U @ Vt
 
         self.orthogonal_maps = orthogonal_maps_temp
 

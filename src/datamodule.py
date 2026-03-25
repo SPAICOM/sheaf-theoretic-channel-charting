@@ -138,6 +138,8 @@ class CSIDataModule(l.LightningDataModule):
         'coverage_area': 0.2,
         'include_same_user_outside_window': False,
         'p_positive': 0.5,  # for contrastive
+        'n_pos': None,  # number of positives to sample per anchor (None = all)
+        'n_neg': None,  # number of negatives to sample per anchor (None = all)
         'train_seed': 27,
         'test_seed': 42,
         'val_seed': 123,
@@ -186,6 +188,8 @@ class CSIDataModule(l.LightningDataModule):
         )
 
         self.edge_set = [tuple(edge) for edge in self.cfg['edge_set']]
+        self.n_pos = self.cfg['n_pos']
+        self.n_neg = self.cfg['n_neg']
 
         # Dataset placeholders (initialized during setup)
         self.train_dataset = None
@@ -544,6 +548,15 @@ class CSIDataModule(l.LightningDataModule):
 
                 if len(pos) == 0 or len(neg) == 0:
                     continue
+                if self.n_pos is not None and len(pos) < self.n_pos:
+                    continue
+                if self.n_neg is not None and len(neg) < self.n_neg:
+                    continue
+
+                if self.n_pos is not None:
+                    pos = pos[self.rng.choice(len(pos), size=self.n_pos, replace=False)]
+                if self.n_neg is not None:
+                    neg = neg[self.rng.choice(len(neg), size=self.n_neg, replace=False)]
 
                 self.idx_to_neg_pos[(user_id, anchor_rx)] = {
                     'pos': pos,
@@ -614,13 +627,17 @@ class CSIDataModule(l.LightningDataModule):
         # Channel computation arguments
         ch_kwargs = self.cfg.get('compute_channels') or {}
 
-        max_subcarries = self.cfg.get('compute_channels').get(
-            'max_subcarriers', 0
+        max_subcarriers = self.cfg.get('compute_channels').get(
+            'max_subcarriers', 1
         )
+        
+        del ch_kwargs['max_subcarriers']
+        
+
         ch_kwargs['ue_antenna']['shape'] = np.array(
             ch_kwargs.get('ue_antenna', {}).get('shape', [1, 1])
         )
-        ch_kwargs['ofdm'] = {'selected_subcarriers': np.arange(max_subcarries)}
+        ch_kwargs['ofdm'] = {'selected_subcarriers': np.arange(max_subcarriers)}
 
         self.n_agents = len(self.ds.bs_pos)
 
@@ -731,6 +748,7 @@ class CSIDataModule(l.LightningDataModule):
                 self.train_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
                 shuffle=True,
+                drop_last=True,
             )
 
         for bs_1, bs_2 in self.train_shared_dataset:
@@ -738,6 +756,7 @@ class CSIDataModule(l.LightningDataModule):
                 self.train_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
                 shuffle=True,
+                drop_last=True,
             )
 
         return CombinedLoader(loaders, mode='max_size_cycle')

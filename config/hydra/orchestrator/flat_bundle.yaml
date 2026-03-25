@@ -2,7 +2,7 @@ _target_: src.FlatBundleCC
 
 agents: null
 neighbors: null
-lmb_in: 0.0
+lmb_min: 0.0
 lmb_max: 1.0
 lmb_schedule: cosine
 lr: 1e-3

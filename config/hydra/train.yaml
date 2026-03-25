@@ -14,7 +14,7 @@ logger:
 seed: 80
 
 trainer:
-  max_epochs: 50
+  max_epochs: 20
   accelerator: auto
   devices: 1
 

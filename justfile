@@ -31,3 +31,5 @@ cs:
 
 bun:
     {{sim}} orchestrator=bundle
+
+sim-all: bun cs fb ot fed

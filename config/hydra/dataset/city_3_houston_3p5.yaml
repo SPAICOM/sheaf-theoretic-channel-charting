@@ -7,16 +7,19 @@ pin_memory: true
 
 trajectory_kind: neighbor_linear
 train_num_users: 4
-val_num_users: 4
-coverage_area: 0.5
+val_num_users: 2
+coverage_area: 0.6
 T_min: 1e3
 T_max: 1001
-in_window: 1
-out_window: 2
+in_window: 5
+out_window: 10
+n_pos: 3
+n_neg: 3
 
 edge_set:
   - [1, 2]
   - [0, 2]
+  - [0, 1]
   
 compute_channels:
   max_subcarriers: 288

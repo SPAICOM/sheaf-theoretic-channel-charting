@@ -64,12 +64,11 @@ class Encoder(nn.Module):
         # Build hidden layers that progressively reduce dimensionality
         for _ in range(self.num_hidden_layers - 1):
             self.linear_layers.append(nn.Linear(dim, dim // 2))
-            self.norm_layers.append(nn.LayerNorm(dim // 2))
+            self.norm_layers.append(nn.BatchNorm1d(dim // 2))
             dim = dim // 2
 
         # Final projection layer producing the embedding
         self.linear_layers.append(nn.Linear(dim, self.out_dim))
-        # self.norm_layers.append(nn.BatchNorm1d(self.out_dim))
 
     def forward(
         self,
@@ -88,13 +87,24 @@ class Encoder(nn.Module):
         torch.Tensor
             Encoded embedding of shape (batch_size, out_dim).
         """
-        # Apply activation to all layers except the last
+        # Track whether input is 3D: (BS, P, d) — e.g. multiple positives/negatives
+        shape_3d = x.dim() == 3
+        if shape_3d:
+            BS, P, _ = x.shape
+            x = x.reshape(BS * P, -1)
+
+        # Apply activation + BatchNorm to all layers except the last
         for i in range(self.num_hidden_layers - 1):
             x = self.act(self.linear_layers[i](x))
             x = self.norm_layers[i](x)
 
         # Final linear projection (no activation)
-        return self.linear_layers[-1](x)
+        x = self.linear_layers[-1](x)
+
+        if shape_3d:
+            x = x.reshape(BS, P, -1)
+
+        return x
 
 
 class Decoder(nn.Module):
@@ -139,12 +149,14 @@ class Decoder(nn.Module):
 
         # Container for decoder layers
         self.layers = nn.ModuleList()
+        self.norm_layers = nn.ModuleList()
 
         dim = in_dim
 
         # Hidden layers progressively expand dimensionality
         for _ in range(self.num_hidden_layers - 1):
             self.layers.append(nn.Linear(dim, dim * 2))
+            self.norm_layers.append(nn.BatchNorm1d(dim * 2))
             dim = dim * 2
 
         # Final reconstruction layer
@@ -167,10 +179,20 @@ class Decoder(nn.Module):
         torch.Tensor
             Reconstructed feature tensor of shape (batch_size, out_dim).
         """
+
+        shape_3d = x.dim() == 3
+        if shape_3d:
+            BS, P, _ = x.shape
+            x = x.reshape(BS * P, -1)
+
         # Apply activation to all layers except the last
         for i in range(self.num_hidden_layers - 1):
             x = self.act(self.layers[i](x))
+            x = self.norm_layers[i](x)
 
+        if shape_3d:
+            x = x.reshape(BS, P, -1)
+        
         # Final linear reconstruction
         return self.layers[-1](x)
 

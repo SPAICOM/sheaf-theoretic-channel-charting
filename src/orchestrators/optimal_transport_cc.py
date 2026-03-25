@@ -40,7 +40,7 @@ class OptimalTransportCC(BaseOrchestrator):
         neighbors: dict[int, set[int]],
         lr: float,
         weight_decay: float,
-        lmb_in: float = 1e-3,
+        lmb_min: float = 1e-3,
         lmb_max: float = 1.0,
         lmb_schedule: str = 'cosine',
     ):
@@ -50,7 +50,7 @@ class OptimalTransportCC(BaseOrchestrator):
             weight_decay=weight_decay,
             lr=lr,
         )
-        self._lmb = lmb_in
+        self._lmb = lmb_min
         self.save_hyperparameters()
 
         # Network description
@@ -80,18 +80,18 @@ class OptimalTransportCC(BaseOrchestrator):
         max_epochs = self.trainer.max_epochs
         t = self.current_epoch / max(max_epochs - 1, 1)
 
-        lmb_in = self.hparams['lmb_in']
+        lmb_min = self.hparams['lmb_min']
         lmb_max = self.hparams['lmb_max']
         schedule = self.hparams['lmb_schedule']
 
         if t == 0.0:
-            self._lmb = lmb_in
+            self._lmb = lmb_min
         elif schedule == 'linear':
-            self._lmb = lmb_in + (lmb_max - lmb_in) * t
+            self._lmb = lmb_min + (lmb_max - lmb_min) * t
         elif schedule == 'exponential':
-            self._lmb = lmb_in * (lmb_max / lmb_in) ** t
+            self._lmb = lmb_min * (lmb_max / lmb_min) ** t
         elif schedule == 'cosine':
-            self._lmb = lmb_in + (lmb_max - lmb_in) * (1 - math.cos(math.pi * t)) / 2
+            self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
         else:
             raise ValueError(f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine.")
 
@@ -182,7 +182,7 @@ class OptimalTransportCC(BaseOrchestrator):
             total_transport_loss += transport_loss
 
         self.log(
-            f'{prefix}/total_transport_loss',
+            f'{prefix}/total_alignment_loss',
             total_transport_loss,
             on_step=on_step,
             on_epoch=True,
