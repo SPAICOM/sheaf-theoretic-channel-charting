@@ -12,6 +12,6 @@ __all__ = [
     'BundleCC',
     'DiagSheafCC',
     'NeuralDiagSheafCC',
-    'PersonalizedFederatedCC'
+    'PersonalizedFederatedCC',
     'VanillaCC'
 ]
