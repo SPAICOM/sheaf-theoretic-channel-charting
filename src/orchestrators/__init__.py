@@ -6,6 +6,7 @@ from .bundle_cc import BundleCC
 from .diag_sheaf import DiagSheafCC
 from .neural_diag_sheaf import NeuralDiagSheafCC
 from .personalized_federated_cc import PersonalizedFederatedCC
+from .vanilla_baseline import VanillaCC
 
 __all__ = [
     'FederatedCC',
@@ -15,5 +16,6 @@ __all__ = [
     'BundleCC',
     'DiagSheafCC',
     'NeuralDiagSheafCC',
-    'PersonalizedFederatedCC'
+    'PersonalizedFederatedCC',
+    'VanillaCC'
 ]
