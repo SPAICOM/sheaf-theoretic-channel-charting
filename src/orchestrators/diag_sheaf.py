@@ -72,7 +72,7 @@ class DiagSheafCC(BaseOrchestrator):
         """
         train_shared_dataset = self.trainer.datamodule.train_shared_dataset
 
-        diagonal_maps = {}
+        diagonal_maps_temp = {}
         for edge_key, dataset in train_shared_dataset.items():
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)

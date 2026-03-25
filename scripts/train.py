@@ -25,23 +25,23 @@ def main(cfg: DictConfig):
     dm.setup('fit')
 
     loader = dm.train_dataloader()
-    print('LOCAL DATASETS')
-    for k, ds in dm.train_local_dataset.items():
-        print(k, len(ds))
+    # print('LOCAL DATASETS')
+    # for k, ds in dm.train_local_dataset.items():
+    #     print(k, len(ds))
 
-    print('\nSHARED DATASETS')
-    for k, ds in dm.train_shared_dataset.items():
-        print(k, len(ds))
+    # print('\nSHARED DATASETS')
+    # for k, ds in dm.train_shared_dataset.items():
+    #     print(k, len(ds))
 
-    batch = next(iter(loader))
-    example_agent = batch[0][0]
-    print(
-        len(example_agent),
-        example_agent[0].shape,
-        example_agent[1].shape,
-        example_agent[2].shape,
-        example_agent[2].shape,
-    )
+    # batch = next(iter(loader))
+    # example_agent = batch[0][0]
+    # print(
+    #     len(example_agent),
+    #     example_agent[0].shape,
+    #     example_agent[1].shape,
+    #     example_agent[2].shape,
+    #     example_agent[2].shape,
+    # )
 
     # batch = next(iter(dm.train_dataloader()))
     # print(batch)
@@ -53,24 +53,24 @@ def main(cfg: DictConfig):
     # -----------------------------
     # Model
     # -----------------------------
-    # model = instantiate(cfg.model, in_dim=dm.feature_dim)
+    model = instantiate(cfg.model, in_dim=dm.feature_dim)
 
-    # wandb_logger = WandbLogger(
-    #     project=cfg.logger.project,
-    # )
+    wandb_logger = WandbLogger(
+        project=cfg.logger.project,
+    )
 
     # # -----------------------------
     # # Trainer
     # # -----------------------------
-    # trainer = L.Trainer(
-    #     max_epochs=cfg.model.max_epochs,
-    #     accelerator='auto',
-    #     devices='auto',
-    #     log_every_n_steps=10,
-    #     logger=wandb_logger,
-    # )
+    trainer = L.Trainer(
+        max_epochs=cfg.model.max_epochs,
+        accelerator='auto',
+        devices='auto',
+        log_every_n_steps=10,
+        logger=wandb_logger,
+    )
 
-    # trainer.fit(model, datamodule=dm)
+    trainer.fit(model, datamodule=dm)
 
     return None
 
