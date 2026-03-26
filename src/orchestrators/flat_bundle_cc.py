@@ -103,11 +103,11 @@ class FlatBundleCC(BaseOrchestrator):
                     continue
                 neighbor_str = edge[1] if edge[0] == agent_str else edge[0]
 
-                Z_a = shared_embeddings[edge][agent_str]  # (N, d)
-                Z_n = shared_embeddings[edge][neighbor_str]  # (N, d)
+                Z_a = shared_embeddings[edge][agent_str]                            # (N, d)
+                Z_n = shared_embeddings[edge][neighbor_str]                         # (N, d)
                 R_n = self.local_reference_frames[neighbor_str].to(self.device)
 
-                # Aggregate cross-covariance: Z_a^T @ (Z_n @ R_n^T)  → (d, d)
+                # Aggregate cross-covariance
                 cross_cov += Z_a.T @ (Z_n @ R_n.T)
 
             # Kabsch polar factor (closest proper rotation to cross_cov)

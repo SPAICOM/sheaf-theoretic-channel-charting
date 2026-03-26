@@ -344,7 +344,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     @torch.no_grad()
     def build_test_trajectory(
-        self
+        self,
         agent_idx: int
     ):
         test_local_loader = Dataloader(
