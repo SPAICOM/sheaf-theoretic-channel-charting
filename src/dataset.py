@@ -115,8 +115,8 @@ class TrajectoryCSIDataset(Dataset):
     idx_to_neg_pos : dict
         Mapping from (user_id, rx_idx) to dict with 'pos' and 'neg' keys
         containing lists of positive and negative indices.
-    mask : np.ndarray
-        Boolean mask indicating valid receiver positions.
+    valid_idxs : np.ndarray
+        Valid indexes for the specific base station.
     rx_pos : np.ndarray
         Positions of receiver antennas, shape (N_rx, 2 or 3).
     channels : np.ndarray
@@ -144,7 +144,7 @@ class TrajectoryCSIDataset(Dataset):
     def __init__(
         self,
         idx_to_neg_pos: dict[tuple[int, int], dict[str, list[int]]],
-        mask: np.ndarray,
+        valid_idxs: np.ndarray,
         rx_pos: np.ndarray,
         channels: np.ndarray,
         pair_mode: str = 'triplet',
@@ -163,17 +163,12 @@ class TrajectoryCSIDataset(Dataset):
 
         # Build valid index set for filtering trajectories
         self.idx_to_neg_pos = idx_to_neg_pos.copy()
-        self.valid_idxs = np.where(mask)[0]
-        for user_id, idx in list(self.idx_to_neg_pos.keys()):
-            if idx not in self.valid_idxs:
-                del self.idx_to_neg_pos[(user_id, idx)]
-
-        # ---- Build variable-length trajectories once ----
-        self.idx_to_neg_pos = idx_to_neg_pos.copy()
-        self.valid_idxs = np.where(mask)[0]
+        self.valid_idxs = valid_idxs
         for user_id, idx in idx_to_neg_pos:
             if idx not in self.valid_idxs:
                 del self.idx_to_neg_pos[(user_id, idx)]
+
+        self.rx_pos = rx_pos
 
     # ----------------- CSI helpers -----------------
     def _H_from_global_index(
@@ -194,6 +189,25 @@ class TrajectoryCSIDataset(Dataset):
             Complex CSI tensor for the corresponding RX location.
         """
         return torch.from_numpy(self.channels[gidx])  # complex tensor
+
+    def _pos_from_global_index(
+        self,
+        gidx: int,
+    ) -> torch.Tensor:
+        """
+        Return the CSI tensor for the given global index.
+
+        Parameters
+        ----------
+        gidx : int
+            Global index into the flattened trajectory dataset.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex CSI tensor for the corresponding RX location.
+        """
+        return torch.from_numpy(self.rx_pos[gidx])  # complex tensor
 
     # ----------------- Dataset API -----------------
     def __len__(self) -> int:
@@ -234,7 +248,7 @@ class TrajectoryCSIDataset(Dataset):
                 xP = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs])
                 xN = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs])
 
-                y = torch.tensor(-1, dtype=torch.long)  # <-- IMPORTANT
+                y = torch.tensor(-1, dtype=torch.long)
 
             case 'contrastive':
                 # Contrastive:
@@ -258,7 +272,9 @@ class TrajectoryCSIDataset(Dataset):
                     )
                     y = torch.tensor(0, dtype=torch.long)
 
-        return xA, xP, xN, y
+        pos = self._pos_from_global_index(id[1])
+
+        return xA, xP, xN, y, pos
 
         # xA: [BS, d]
         # xP: [BS, n_pos, d]
