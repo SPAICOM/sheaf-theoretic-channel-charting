@@ -17,14 +17,14 @@ Subclasses must implement the following abstract methods:
 >>> class MyOrchestrator(BaseOrchestrator):
 ...     def on_train_epoch_end(self): ...
 ...     def _shared_eval(self, batch, batch_idx, prefix): ...
-...     def communicate(self, idx_i, idx_j): ...
+...     def on_train_epoch_end(self): ...
 """
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import Any
 
 import lightning as l
-import numpy as np
 import scipy
 import torch
 import torch.nn as nn
@@ -64,8 +64,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     Notes
     -----
-    - Subclasses must implement: ``on_train_epoch_end``, ``_shared_eval``,
-      and ``communicate``.
+    - Subclasses must implement: ``on_train_epoch_end`` and ``_shared_eval``.
     - The ``forward`` method processes batches from all agents.
     - Logging is handled through the ``_shared_eval`` method which is called
       from ``training_step``, ``validation_step``, and ``test_step``.
@@ -126,8 +125,8 @@ class BaseOrchestrator(l.LightningModule, ABC):
         Example
         -------
         >>> batch = {
-        ...     0: [xA_0, xP_0, xN_0],
-        ...     1: [xA_1, xP_1, xN_1],
+        ...     0: [xA_0, xP_0, xN_0, y, posA0],
+        ...     1: [xA_1, xP_1, xN_1, y, posA1],
         ... }
         >>> outputs = orchestrator(batch)
         >>> # outputs[0] contains embeddings for agent 0
@@ -309,38 +308,6 @@ class BaseOrchestrator(l.LightningModule, ABC):
         )
         return {'optimizer': optimizer}
 
-    @abstractmethod
-    def communicate(
-        self,
-        idx_i: int,
-        idx_j: int,
-    ) -> torch.Tensor:
-        """Perform communication between two agents.
-
-        This method implements the communication protocol between agents.
-        The specific implementation varies by orchestrator type:
-        - Federated: exchange model parameters
-        - Bundle/Sheaf: exchange embedding representations
-
-        Parameters
-        ----------
-        idx_i : int
-            Index of the first agent.
-        idx_j : int
-            Index of the second agent.
-
-        Returns
-        -------
-        torch.Tensor
-            Communication result (e.g., aggregated parameters, shared embeddings).
-
-        Notes
-        -----
-        Subclasses must implement this method to define how information
-        is exchanged between agents in the network.
-        """
-        pass
-
     # -------------------------------------------------------
     #     Methods for dimensionality reduction evaluation
     # -------------------------------------------------------
@@ -348,16 +315,16 @@ class BaseOrchestrator(l.LightningModule, ABC):
     @torch.no_grad()
     def build_test_trajectory(self, agent_idx: int):
         test_local_loader = DataLoader(
-            self.trainer.datamodule.test_local_dataset[agent_idx], batch_size=64, shuffle=False
+            self.trainer.datamodule.test_local_dataset[int(agent_idx)], batch_size=64, shuffle=False
         )
         agent = self.agents[agent_idx]
 
         test_embs = []
         pos = []
 
-        for H, _, _, _, p in test_local_loader:
-            test_embs.append(agent(H))
-            pos.append(p)
+        for batch in test_local_loader:
+            test_embs.append(agent(batch)[0])
+            pos.append(batch[-1])
 
         embs = torch.cat(test_embs, dim=0)
         pos = torch.cat(pos, dim=0)
@@ -371,14 +338,14 @@ class BaseOrchestrator(l.LightningModule, ABC):
         self,
         embs: torch.tensor,
         pos: torch.tensor,
-        embs_KDTree: scipy.spatial.KDTree,
+        # embs_KDTree: scipy.spatial.KDTree,
         pos_KDTree: scipy.spatial.KDTree,
         K: int,
     ) -> None:
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
 
-        CT = np.zeros(N)
+        CT = torch.zeros(N)
         for i in range(N):
             # Get K nearest neighbors in the original space
             x = pos[i, :]
@@ -401,20 +368,23 @@ class BaseOrchestrator(l.LightningModule, ABC):
         embs: torch.tensor,
         pos: torch.tensor,
         embs_KDTree: scipy.spatial.KDTree,
-        pos_KDTree: scipy.spatial.KDTree,
+        # pos_KDTree: scipy.spatial.KDTree,
         K: int,
     ) -> None:
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
 
-        TW = np.zeros(N)
+        TW = torch.zeros(N)
         for i in range(N):
             # Get K nearest neihbors in the representation space
             x = embs[i, :]
             _, Vx = embs_KDTree.query(x, k=K)
 
+            # Get the corresponding of the KNN in the original space
+            Ux = pos[Vx, :]
+
             # Rank the corresponding of the KNN in the original space by distance
-            D = torch.linalg.norm(Vx - pos[i, :])
+            D = torch.linalg.norm(Ux - pos[i, :])
             r = torch.argsort(D)
 
             # Retrieve point-wise continuity
@@ -447,6 +417,32 @@ class BaseOrchestrator(l.LightningModule, ABC):
     @torch.no_grad()
     def _compute_FOSCTTM(self) -> None:
         pass
+
+    def eval_all(self, K_max: int, K_min: int = 1, step: int = 1):
+
+        # Results
+        res = {'KS': [], 'CT': defaultdict(list), 'TW': defaultdict(list)}
+        for agent in self.agents:
+            embs, pos, embs_KDTree, pos_KDTree = self.build_test_trajectory(agent_idx=agent)
+            res['KS'].append(self.compute_kruskal_stress(embs=embs, pos=pos))
+            for K in range(K_min, K_max + 1, step):
+                res['CT'][K].append(self.compute_continuity(embs=embs, pos=pos, pos_KDTree=pos_KDTree, K=K))
+                res['TW'][K].append(self.compute_trustworthiness(embs=embs, pos=pos, embs_KDTree=embs_KDTree, K=K))
+        res['FOSCTTM'] = self._compute_FOSCTTM()
+
+        # Logging
+        wandb_log = {}
+        for K in range(K_min, K_max + 1, step):
+            for agent_idx, agent in enumerate(self.agents):
+                wandb_log[f'eval/CT_K{K}_agent_{agent_idx}'] = res['CT'][K][agent_idx]
+                wandb_log[f'eval/TW_K{K}_agent_{agent_idx}'] = res['TW'][K][agent_idx]
+        for agent_idx, agent in enumerate(self.agents):
+            wandb_log[f'eval/KS_agent_{agent_idx}'] = res['KS'][agent_idx]
+        wandb_log['eval/FOSCTTM'] = res['FOSCTTM']
+        self.logger.experiment.log(wandb_log)
+
+        return res
+
 
 
 if __name__ == '__main__':

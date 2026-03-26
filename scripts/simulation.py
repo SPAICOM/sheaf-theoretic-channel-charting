@@ -97,6 +97,11 @@ def main(cfg: DictConfig) -> None:
     # -------------------------
     trainer.fit(orchestrator, datamodule=datamodule)
 
+    # -------------------------
+    # Test
+    # -------------------------
+    orchestrator.eval_all(K_max=10)
+
     # Cleaning the working space
     remove_non_empty_dir('./wandb/')
     remove_non_empty_dir('./multirun/')

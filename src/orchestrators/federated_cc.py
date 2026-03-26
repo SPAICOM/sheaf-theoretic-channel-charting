@@ -239,30 +239,5 @@ class FederatedCC(BaseOrchestrator):
 
         return outputs, total_loss
 
-    def communicate(
-        self,
-        idx_i: int,
-        idx_j: int,
-    ) -> torch.Tensor:
-        """Communication between two agents (no-op for federated).
-
-        In this orchestrator, communication is handled via parameter
-        aggregation in ``on_train_epoch_end``, so this is a no-op.
-
-        Parameters
-        ----------
-        idx_i : int
-            Index of the first agent.
-        idx_j : int
-            Index of the second agent.
-
-        Returns
-        -------
-        torch.Tensor
-            Empty tensor (placeholder for interface compatibility).
-        """
-        return torch.tensor([])
-
-
 if __name__ == '__main__':
     pass

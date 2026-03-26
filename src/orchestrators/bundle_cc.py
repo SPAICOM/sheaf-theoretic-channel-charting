@@ -274,27 +274,6 @@ class BundleCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def communicate(
-        self,
-        idx_i: int,
-        idx_j: int,
-    ) -> torch.Tensor:
-        """Communication between two agents (handled in on_train_epoch_end).
-
-        Parameters
-        ----------
-        idx_i : int
-            Index of the first agent.
-        idx_j : int
-            Index of the second agent.
-
-        Returns
-        -------
-        torch.Tensor
-            Empty tensor (placeholder for interface compatibility).
-        """
-        return torch.tensor([])
-
     def _compute_FOSCTTM(self):
         test_shared_dataset = self.trainer.datamodule.test_shared_dataset
         FOSCTTM = torch.zeros(len(self.hparams['edges']))

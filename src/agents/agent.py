@@ -308,6 +308,8 @@ class Agent(nn.Module):
                 Negative samples (None when using contrastive loss).
             - y : torch.Tensor
                 Target tensor used by the Siamese loss.
+            - pos : torch.Tensor
+                Anchor samples positions.
 
         Returns
         -------
@@ -326,7 +328,7 @@ class Agent(nn.Module):
         """
 
         if triplet_mode:
-            xA, xP, xN, y = batch
+            xA, xP, xN, y, _ = batch
 
             # Compute embeddings
             embA = self.encoder(xA)
@@ -382,7 +384,7 @@ class Agent(nn.Module):
             Dictionary with keys 'triplet_loss' and, when use_decoder=True,
             'rec_loss'.
         """
-        xA, _, _, _ = batch
+        xA, _, _, _, _ = batch
         embA, embP, embN, y = embeddings
 
         losses = {'triplet_loss': self.siamese(z1=embA, z2=embP, z3=embN, y=y)}
