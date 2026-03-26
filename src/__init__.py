@@ -1,6 +1,16 @@
 from .agents import Agent
 from .datamodule import CSIDataModule
-from .orchestrators import FederatedCC, OptimalTransportCC, FlatBundleCC, CoverSheafCC, BundleCC, DiagSheafCC, NeuralDiagSheafCC, PersonalizedFederatedCC, VanillaCC
+from .orchestrators import (
+    BundleCC,
+    CoverSheafCC,
+    DiagSheafCC,
+    FederatedCC,
+    FlatBundleCC,
+    NeuralDiagSheafCC,
+    OptimalTransportCC,
+    PersonalizedFederatedCC,
+    VanillaCC,
+)
 
 __all__ = [
     'CSIDataModule',
@@ -13,5 +23,5 @@ __all__ = [
     'DiagSheafCC',
     'NeuralDiagSheafCC',
     'PersonalizedFederatedCC',
-    'VanillaCC'
+    'VanillaCC',
 ]

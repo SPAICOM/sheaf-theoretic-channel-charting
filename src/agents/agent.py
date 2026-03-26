@@ -87,7 +87,7 @@ class Encoder(nn.Module):
         torch.Tensor
             Encoded embedding of shape (batch_size, out_dim).
         """
-        # Track whether input is 3D: (BS, P, d) — e.g. multiple positives/negatives
+        # Track whether input is 3D: (BS, P, d) — e.g. multiple positives/neg
         shape_3d = x.dim() == 3
         if shape_3d:
             BS, P, _ = x.shape
@@ -192,7 +192,7 @@ class Decoder(nn.Module):
 
         if shape_3d:
             x = x.reshape(BS, P, -1)
-        
+
         # Final linear reconstruction
         return self.layers[-1](x)
 
@@ -253,12 +253,8 @@ class Agent(nn.Module):
         super().__init__()
 
         # Validate configuration
-        assert distance_mode in {'euclidean', 'cosine'}, (
-            'Provide a valid distance mode'
-        )
-        assert loss_mode in {'contrastive', 'triplet'}, (
-            'Provide a valid layer mode'
-        )
+        assert distance_mode in {'euclidean', 'cosine'}, 'Provide a valid distance mode'
+        assert loss_mode in {'contrastive', 'triplet'}, 'Provide a valid layer mode'
 
         self.use_decoder = use_decoder
         self.distance_mode = distance_mode
@@ -276,11 +272,15 @@ class Agent(nn.Module):
             num_hidden_layers=num_hidden_layers,
         )
 
-        self.decoder = Decoder(
-            in_dim=out_dim,
-            out_dim=in_dim,
-            num_hidden_layers=num_hidden_layers,
-        ) if use_decoder else None
+        self.decoder = (
+            Decoder(
+                in_dim=out_dim,
+                out_dim=in_dim,
+                num_hidden_layers=num_hidden_layers,
+            )
+            if use_decoder
+            else None
+        )
 
         self.siamese = SiameseLayer(
             loss_mode=loss_mode,
@@ -292,10 +292,7 @@ class Agent(nn.Module):
         self,
         batch,
         triplet_mode: bool = True,
-    ) -> (
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
-        | torch.Tensor
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | torch.Tensor:
         """
         Forward pass used by training, validation, and test steps.
 

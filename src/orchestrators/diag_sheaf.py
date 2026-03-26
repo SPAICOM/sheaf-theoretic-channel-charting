@@ -40,8 +40,7 @@ class DiagSheafCC(BaseOrchestrator):
         # One orthogonal map per edge, initialised to identity
         d = self.agents[list(self.agents.keys())[0]].out_dim
         self.diagonal_maps = {
-            edge: torch.eye(d, device=self.device)
-            for edge in self.hparams['edges']
+            edge: torch.eye(d, device=self.device) for edge in self.hparams['edges']
         }
 
     def on_train_epoch_start(self):
@@ -53,27 +52,27 @@ class DiagSheafCC(BaseOrchestrator):
         lmb_max = self.hparams['lmb_max']
         schedule = self.hparams['lmb_schedule']
 
-        if t == 0.0:
-            self._lmb = lmb_min
-        elif schedule == 'linear':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * t
-        elif schedule == 'exponential':
-            self._lmb = lmb_min * (lmb_max / lmb_min) ** t
-        elif schedule == 'cosine':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
-        else:
-            raise ValueError(f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine.")
+        match schedule:
+            case 'linear':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * t
+            case 'exponential':
+                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
+            case 'cosine':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
+            case _:
+                raise ValueError(
+                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
+                )
 
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     @torch.no_grad()
     def on_train_epoch_end(self):
-        """Update each edge's diagonal map via closed form solution to the defining convex problem
-        """
+        """Update each edge's diagonal map via closed-form solution."""
         train_shared_dataset = self.trainer.datamodule.train_shared_dataset
 
         diagonal_maps_temp = {}
-        for edge_key, dataset in train_shared_dataset.items():
+        for dataset in train_shared_dataset.values():
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
@@ -89,7 +88,7 @@ class DiagSheafCC(BaseOrchestrator):
             Z_i = torch.cat(embs_1, dim=0)  # (N, d)
             Z_j = torch.cat(embs_2, dim=0)  # (N, d)
 
-            # Column-wise inner products 
+            # Column-wise inner products
             a = torch.sum(Z_i * Z_j, dim=0)  # (d,)
             b = torch.sum(Z_j * Z_j, dim=0)  # (d,)
 
@@ -125,7 +124,7 @@ class DiagSheafCC(BaseOrchestrator):
                 The tuple with the output of the network and the epoch loss.
         """
         private_outputs = self(batch)
-        on_step = True if prefix == "train" else False
+        on_step = prefix == 'train'
 
         # Compute embeddings of the overlapping areas
         shared_outputs = {
@@ -162,18 +161,10 @@ class DiagSheafCC(BaseOrchestrator):
 
             total_private_loss += sum(agent_losses.values())
 
-        self.log(
-            f'{prefix}/total_private_loss',
-            total_private_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-
         # Compute the alignment losses
         for i, j in self.hparams['edges']:
-            emb_i = shared_outputs[(i, j)][i]   # (B, d)
-            emb_j = shared_outputs[(i, j)][j]   # (B, d)
+            emb_i = shared_outputs[(i, j)][i]  # (B, d)
+            emb_j = shared_outputs[(i, j)][j]  # (B, d)
             O_ij = self.diagonal_maps[(i, j)].to(self.device)  # (d, d)
 
             # Alignment: ||emb_i - emb_j @ O_ij^T||² per sample
@@ -181,21 +172,14 @@ class DiagSheafCC(BaseOrchestrator):
 
             total_alignment_loss += alignment_loss
 
-        self.log(
-            f'{prefix}/total_alignment_loss',
-            total_alignment_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
+        total_loss = total_private_loss + self._lmb * total_alignment_loss
 
-        total_loss = (
-            total_private_loss + self._lmb * total_alignment_loss
-        )
-
-        self.log(
-            f'{prefix}/total_loss',
-            total_loss,
+        self.log_dict(
+            {
+                f'{prefix}/total_private_loss': total_private_loss,
+                f'{prefix}/total_alignment_loss': total_alignment_loss,
+                f'{prefix}/total_loss': total_loss,
+            },
             on_step=on_step,
             on_epoch=True,
             batch_size=batch_size,
@@ -206,6 +190,7 @@ class DiagSheafCC(BaseOrchestrator):
 
     def communicate(self):
         pass
+
 
 if __name__ == '__main__':
     pass

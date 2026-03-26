@@ -1,49 +1,54 @@
+from __future__ import annotations
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 
 def csi_to_realvec(
-    H,
+    H: torch.Tensor,
     lag_step: int = 4,
     max_lag: int = 60,
     eps: float = 1e-12,
-):
-    """
-    Preprocess CSI tensor following the pipeline in
-    'Triplet-Based Wireless Channel Charting'.
+) -> torch.Tensor:
+    """Preprocess CSI tensor following 'Triplet-Based Wireless Channel Charting'.
+
+    Converts complex-valued Channel State Information (CSI) tensors into
+    real-valued feature vectors using 2D FFT and frequency autocorrelation.
 
     Parameters
     ----------
     H : torch.Tensor
-        Complex CSI tensor of shape (R, T, F)
-        R = receiver antennas
-        T = transmitter antennas
-        F = frequency subcarriers
-
-    lag_step : int
-        Step between autocorrelation lags (default 4)
-
-    max_lag : int
-        Maximum lag (default 60)
-
-    eps : float
-        Small constant for numerical stability in log
+        Complex CSI tensor of shape (R, T, F).
+        R : receiver antennas
+        T : transmitter antennas
+        F : frequency subcarriers
+    lag_step : int, optional
+        Step between autocorrelation lags (default: 4).
+    max_lag : int, optional
+        Maximum lag for autocorrelation (default: 60).
+    eps : float, optional
+        Small constant for numerical stability in logarithm (default: 1e-12).
 
     Returns
     -------
-    features : np.ndarray
-        Flattened real feature vector
+    torch.Tensor
+        Flattened real feature vector of shape (D,), where D is the
+        total number of features after processing.
+
+    Example
+    -------
+    >>> H = torch.randn(4, 2, 64, dtype=torch.complex64)  # (R, T, F)
+    >>> features = csi_to_realvec(H)  # shape: (D,)
     """
     device = H.device
-    # H = torch.tensor(H).detach().clone()
     H = np.array(H)
     R, T, F = H.shape
 
-    # 2 dimensional FT (from RT domain to beam angular domain)
+    # 2D FFT: transform from RT domain to beam angular domain
     H_beam = np.fft.fft2(H, axes=(0, 1))  # shape: (R, T, F)
 
-    # Autocorrelation in frequency
+    # Compute autocorrelation in frequency domain across lags
     lags = np.arange(0, max_lag + 1, lag_step)
     num_lags = len(lags)
 
@@ -51,16 +56,16 @@ def csi_to_realvec(
 
     for i, lag in enumerate(lags):
         if lag == 0:
+            # Zero lag: autocorrelation is power sum across all frequencies
             r[:, :, i] = np.sum(H_beam * np.conj(H_beam), axis=2)
         else:
-            r[:, :, i] = np.sum(
-                H_beam[:, :, :-lag] * np.conj(H_beam[:, :, lag:]), axis=2
-            )
+            # Non-zero lag: shifted correlation across frequency axis
+            r[:, :, i] = np.sum(H_beam[:, :, :-lag] * np.conj(H_beam[:, :, lag:]), axis=2)
 
-    # Log scaling
+    # Log scaling for dynamic range compression
     r = np.log(np.abs(r) + eps)
 
-    # Flatten to vector
+    # Flatten to 1D feature vector and convert back to tensor
     features = r.reshape(-1)
     features = torch.from_numpy(features).float().to(device)
 
@@ -95,86 +100,73 @@ def csi_to_realvec(
 
 
 class TrajectoryCSIDataset(Dataset):
-    """
-    Dataset producing Siamese batches for CSI trajectory learning.
+    """Dataset producing Siamese batches for CSI trajectory learning.
 
     Supports two sampling modes:
 
-    - 'triplet': returns (xA, xP, xN, y=-1)
-    - 'contrastive': returns (xA, xP, xN=None, y in {0,1})
+    - ``'triplet'``: returns (xA, xP, xN, y=-1) for triplet loss
+    - ``'contrastive'``: returns (xA, xP, xN, y in {0,1}) for contrastive loss
 
-    Positives:
-        Same user, |dt| <= window, excluding anchor.
-    Negatives:
-        Same user outside window if
+    Positive samples are from the same user within a time window.
+    Negative samples are from the same user outside the window.
 
     Parameters
     ----------
+    idx_to_neg_pos : dict
+        Mapping from (user_id, rx_idx) to dict with 'pos' and 'neg' keys
+        containing lists of positive and negative indices.
+    mask : np.ndarray
+        Boolean mask indicating valid receiver positions.
     rx_pos : np.ndarray
         Positions of receiver antennas, shape (N_rx, 2 or 3).
-    H_users : np.ndarray
-        CSI data per RX position, shape (N_rx, ...).
-    num_users : int, optional
-        Number of simulated users (default: 500).
-    T_min : int, optional
-        Minimum trajectory length (default: 32).
-    T_max : int, optional
-        Maximum trajectory length (default: 128).
-    kinds : tuple, optional
-        Trajectory types: 'linear', 'circular', 'random' (default all).
+    channels : np.ndarray
+        Complex CSI data for each receiver position, shape (N_rx, R, T, F).
     pair_mode : str, optional
-        'triplet' or 'contrastive' (default: 'triplet').
-    window : int, optional
-        Time window for positive sampling (default: 3).
+        Sampling mode: ``'triplet'`` or ``'contrastive'`` (default: ``'triplet'``).
     p_positive : float, optional
-        Probability of positive pair in contrastive mode (default: 0.5).
-    seed : int, optional
-        Random seed (default: 0).
+        Probability of sampling a positive pair in contrastive mode
+        (default: 0.5). Only used when ``pair_mode='contrastive'``.
+
+    Attributes
+    ----------
+    pair_mode : str
+        The current sampling mode.
+    p_positive : float
+        Probability of positive sampling in contrastive mode.
 
     Notes
     -----
-    - Converts complex CSI to real-valued vectors with `csi_to_realvec`.
-    - Builds variable-length trajectories per user at initialization.
-    - Provides methods to sample positives and negatives efficiently.
+    - Complex CSI is converted to real-valued vectors via :func:`csi_to_realvec`.
+    - Trajectories are built at initialization and stored in ``idx_to_neg_pos``.
+    - Uses a random number generator for stochastic sampling in contrastive mode.
     """
 
     def __init__(
         self,
-        idx_to_neg_pos: dict,
+        idx_to_neg_pos: dict[tuple[int, int], dict[str, list[int]]],
         mask: np.ndarray,
         rx_pos: np.ndarray,
         channels: np.ndarray,
         pair_mode: str = 'triplet',
-        # bs_pos: np.ndarray = None,
-        # num_users: int = 1,
-        # T_min: int = 32,
-        # T_max: int = 128,
-        # trajectory_kind: str | None = None,
-        # linear_len=(20.0, 120.0),
-        # circle_r=(10.0, 60.0),
-        # random_step=(1.0, 5.0),
-        # random_keep_dir=0.7,
-        # z_min: float | None = None,
-        # z_max: float | None = None,
-        # r_min: float | None = None,
-        # r_max: float | None = None,
-        # coverage_area: float = 0.2,
-        # bias_sampling: bool = False,
-        # seed: int = 0,
-        # # --- Siamese sampling controls ---
-        # pair_mode: str = 'triplet',  # "triplet" or "contrastive"
-        # in_window: int = 3,
-        # out_window: int = 6,
-        p_positive: float = 0.5,  # only for contrastive
+        p_positive: float = 0.5,
     ):
         super().__init__()
 
-        # Siamese sampling configuration
+        # Validate sampling mode
         assert pair_mode in ('triplet', 'contrastive')
         self.pair_mode = pair_mode
         self.p_positive = float(p_positive)
 
         self.channels = channels
+        # Initialize random generator for contrastive sampling
+        self.rng = np.random.default_rng()
+
+        # Build valid index set for filtering trajectories
+        self.idx_to_neg_pos = idx_to_neg_pos.copy()
+        self.valid_idxs = np.where(mask)[0]
+        for user_id, idx in list(self.idx_to_neg_pos.keys()):
+            if idx not in self.valid_idxs:
+                del self.idx_to_neg_pos[(user_id, idx)]
 
         # ---- Build variable-length trajectories once ----
         self.idx_to_neg_pos = idx_to_neg_pos.copy()
@@ -239,18 +231,8 @@ class TrajectoryCSIDataset(Dataset):
                 # Triplet
 
                 xA = csi_to_realvec(H_A)
-                xP = torch.vstack(
-                    [
-                        csi_to_realvec(self._H_from_global_index(i))
-                        for i in pos_idxs
-                    ]
-                )
-                xN = torch.vstack(
-                    [
-                        csi_to_realvec(self._H_from_global_index(i))
-                        for i in neg_idxs
-                    ]
-                )
+                xP = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs])
+                xN = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs])
 
                 y = torch.tensor(-1, dtype=torch.long)  # <-- IMPORTANT
 
@@ -260,31 +242,19 @@ class TrajectoryCSIDataset(Dataset):
                 if self.rng.random() < self.p_positive:
                     xA = csi_to_realvec(H_A)
                     xP = torch.vstack(
-                        [
-                            csi_to_realvec(self._H_from_global_index(i))
-                            for i in pos_idxs
-                        ]
+                        [csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs]
                     )
                     xN = torch.vstack(
-                        [
-                            csi_to_realvec(self._H_from_global_index(i))
-                            for i in neg_idxs
-                        ]
+                        [csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs]
                     )
                     y = torch.tensor(1, dtype=torch.long)
                 else:
                     xA = csi_to_realvec(H_A)
                     xP = torch.vstack(
-                        [
-                            csi_to_realvec(self._H_from_global_index(i))
-                            for i in pos_idxs
-                        ]
+                        [csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs]
                     )
                     xN = torch.vstack(
-                        [
-                            csi_to_realvec(self._H_from_global_index(i))
-                            for i in neg_idxs
-                        ]
+                        [csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs]
                     )
                     y = torch.tensor(0, dtype=torch.long)
 
@@ -296,8 +266,42 @@ class TrajectoryCSIDataset(Dataset):
 
 
 class SharedTrajectoryCSIDataset(Dataset):
-    """
-    Dataset producing shared batches between bss for CSI trajectory learning.
+    """Dataset producing shared samples between base stations for CSI learning.
+
+    This dataset provides paired CSI samples from overlapping coverage areas
+    of two base stations, used for learning shared representations across
+    the wireless network.
+
+    Parameters
+    ----------
+    shared_mask : np.ndarray
+        Boolean mask indicating valid shared positions.
+    shared_pos : np.ndarray
+        Positions of shared receiver locations, shape (N_shared, 2 or 3).
+    channels_bs_1 : np.ndarray
+        Complex CSI data from base station 1, shape (N_shared, R, T, F).
+    channels_bs_2 : np.ndarray
+        Complex CSI data from base station 2, shape (N_shared, R, T, F).
+    idx_bs_1 : int
+        Index identifier for base station 1.
+    idx_bs_2 : int
+        Index identifier for base station 2.
+
+    Attributes
+    ----------
+    idx_bs_1 : int
+        Index of the first base station.
+    idx_bs_2 : int
+        Index of the second base station.
+    channels_bs_1 : np.ndarray
+        CSI data from base station 1.
+    channels_bs_2 : np.ndarray
+        CSI data from base station 2.
+
+    Notes
+    -----
+    - Complex CSI is converted to real-valued vectors via :func:`csi_to_realvec`.
+    - Returns tuple (H_1, H_2, (idx_bs_1, idx_bs_2)) for downstream processing.
     """
 
     def __init__(
@@ -317,34 +321,39 @@ class SharedTrajectoryCSIDataset(Dataset):
         self.shared_mask = shared_mask
         self.shared_pos = shared_pos
 
-        self.channels_bs_1 = channels_bs_1  # (num_points, R, T, F)
-        self.channels_bs_2 = channels_bs_2  # (num_points, R, T, F)
+        # Store CSI data: (num_points, R, T, F) for each base station
+        self.channels_bs_1 = channels_bs_1
+        self.channels_bs_2 = channels_bs_2
 
-    # ----------------- Dataset API -----------------
     def __len__(self) -> int:
-        """
-        Return the total number of samples in the dataset.
+        """Return the total number of shared samples.
 
         Returns
         -------
         int
-            Total number of trajectory points across all users.
+            Number of shared receiver positions between the two base stations.
         """
         return self.channels_bs_1.shape[0]
 
     def __getitem__(
         self,
         index: int,
-    ):
-        """
-        Return one Siamese sample depending on pair_mode.
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int]]:
+        """Return a shared sample pair from both base stations.
+
+        Parameters
+        ----------
+        index : int
+            Index into the shared dataset.
 
         Returns
         -------
-        H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
-            CSI vectors and label / placeholder.
+        tuple[torch.Tensor, torch.Tensor, tuple[int, int]]
+            Tuple containing:
+            - H_1: Real-valued CSI vector from BS1
+            - H_2: Real-valued CSI vector from BS2
+            - (idx_bs_1, idx_bs_2): Base station indices for identification
         """
-        # Anchor retrieving
         H_1 = csi_to_realvec(self.channels_bs_1[index])
         H_2 = csi_to_realvec(self.channels_bs_2[index])
 

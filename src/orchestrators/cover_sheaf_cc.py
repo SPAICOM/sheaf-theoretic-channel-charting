@@ -49,22 +49,23 @@ class CoverSheafCC(BaseOrchestrator):
         lmb_max = self.hparams['lmb_max']
         schedule = self.hparams['lmb_schedule']
 
-        if t == 0.0:
-            self._lmb = lmb_min
-        elif schedule == 'linear':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * t
-        elif schedule == 'exponential':
-            self._lmb = lmb_min * (lmb_max / lmb_min) ** t
-        elif schedule == 'cosine':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
-        else:
-            raise ValueError(f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine.")
+        match schedule:
+            case 'linear':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * t
+            case 'exponential':
+                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
+            case 'cosine':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
+            case _:
+                raise ValueError(
+                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
+                )
 
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     @torch.no_grad()
     def on_train_epoch_end(self):
-        """Local reference frames are fixed to the identity — no alignment update."""
+        """Local reference frames fixed to identity — no alignment update."""
         pass
 
     def _shared_eval(
@@ -88,7 +89,7 @@ class CoverSheafCC(BaseOrchestrator):
                 The tuple with the output of the network and the epoch loss.
         """
         private_outputs = self(batch)
-        on_step = True if prefix == "train" else False
+        on_step = prefix == 'train'
 
         # Compute embeddings of the overlapping areas
         shared_outputs = {
@@ -125,39 +126,24 @@ class CoverSheafCC(BaseOrchestrator):
 
             total_private_loss += sum(agent_losses.values())
 
-        self.log(
-            f'{prefix}/total_private_loss',
-            total_private_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-
         # Compute the alignment losses
         for i, j in self.hparams['edges']:
-            aligned_i = shared_outputs[(i,j)][i] @ self.local_reference_frames[i].to(self.device).T
-            aligned_j = shared_outputs[(i,j)][j] @ self.local_reference_frames[j].to(self.device).T
+            aligned_i = shared_outputs[(i, j)][i] @ self.local_reference_frames[i].to(self.device).T
+            aligned_j = shared_outputs[(i, j)][j] @ self.local_reference_frames[j].to(self.device).T
 
             # Edge specific transport loss
             alignment_loss = (torch.linalg.norm(aligned_i - aligned_j, dim=1) ** 2).mean()
 
             total_alignment_loss += alignment_loss
 
-        self.log(
-            f'{prefix}/total_alignment_loss',
-            total_alignment_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
+        total_loss = total_private_loss + self._lmb * total_alignment_loss
 
-        total_loss = (
-            total_private_loss + self._lmb * total_alignment_loss
-        )
-
-        self.log(
-            f'{prefix}/total_loss',
-            total_loss,
+        self.log_dict(
+            {
+                f'{prefix}/total_private_loss': total_private_loss,
+                f'{prefix}/total_alignment_loss': total_alignment_loss,
+                f'{prefix}/total_loss': total_loss,
+            },
             on_step=on_step,
             on_epoch=True,
             batch_size=batch_size,
@@ -168,6 +154,7 @@ class CoverSheafCC(BaseOrchestrator):
 
     def communicate(self):
         pass
+
 
 if __name__ == '__main__':
     pass

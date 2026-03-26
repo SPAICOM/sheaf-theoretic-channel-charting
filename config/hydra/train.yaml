@@ -29,14 +29,14 @@ callbacks:
 
   checkpoint:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    monitor: validation/total_loss
+    monitor: val/total_loss
     mode: min
     save_top_k: 1
     save_last: true
 
   early_stopping:
     _target_: lightning.pytorch.callbacks.EarlyStopping
-    monitor: validation/total_loss
+    monitor: val/total_loss
     patience: 5
     mode: min
 

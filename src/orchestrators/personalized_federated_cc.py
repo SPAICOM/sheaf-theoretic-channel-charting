@@ -1,3 +1,13 @@
+"""Personalized Federated Channel Charting orchestrator.
+
+This module implements the :class:`PersonalizedFederatedCC` orchestrator which
+performs partial federated averaging, where only a subset of parameters
+(e.g., late encoder/decoder layers) are shared across agents while
+early layers remain personalized.
+"""
+
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 
@@ -5,22 +15,59 @@ from src.orchestrators.base_orchestrator import BaseOrchestrator
 
 
 class PersonalizedFederatedCC(BaseOrchestrator):
-    """
-    Semi-personalized federated orchestrator.
+    """Semi-personalized Federated Channel Charting orchestrator.
 
-    Aggregates only a subset of parameters (e.g., late encoder/decoder layers)
-    while leaving early layers personalized at each agent.
+    This orchestrator implements a hybrid approach where:
+    - Shared parameters (e.g., late encoder/decoder layers) are aggregated
+      across neighboring agents via federated averaging.
+    - Private parameters (e.g., early encoder layers) remain local to each agent.
+
+    This allows agents to benefit from collaborative learning on high-level
+    features while retaining personalized representations for low-level features.
+
+    Parameters
+    ----------
+    agents : dict[int, nn.Module]
+        Dictionary mapping agent indices to their neural network modules.
+    neighbors : dict[int, set[int]]
+        Dictionary mapping each agent index to the set of neighbor indices.
+    lr : float
+        Learning rate for the optimizer.
+    weight_decay : float, optional
+        Weight decay for regularization (default: 0.0).
+    encoder_split : float, optional
+        Fraction of encoder layers to keep private (default: 0.5).
+        Higher values = more personalized early layers.
+    decoder_split : float, optional
+        Fraction of decoder layers to keep private (default: 0.5).
+        Higher values = more personalized late layers.
+
+    Attributes
+    ----------
+    shared_keys : set
+        Parameter keys that are shared/aggregated across agents.
+    private_keys : set
+        Parameter keys that remain local to each agent.
+
+    Example
+    -------
+    >>> orchestrator = PersonalizedFederatedCC(
+    ...     agents={0: agent_0, 1: agent_1},
+    ...     neighbors={0: {1}, 1: {0}},
+    ...     lr=1e-3,
+    ...     encoder_split=0.3,  # First 30% of encoder layers stay private
+    ... )
     """
 
     def __init__(
         self,
-        agents: dict[int, torch.nn.Module],
+        agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
-        weight_decay: float,
+        weight_decay: float = 0.0,
         encoder_split: float = 0.5,
         decoder_split: float = 0.5,
-    ):
+    ) -> None:
         super().__init__(
             agents=agents,
             neighbors=neighbors,
@@ -34,102 +81,91 @@ class PersonalizedFederatedCC(BaseOrchestrator):
         self._validate_agents_for_fedavg()
         self._identify_shared_keys()
 
-    def _identify_shared_keys(self):
-        """Determine which keys to aggregate vs keep local.
+    def _identify_shared_keys(self) -> None:
+        """Identify which parameter keys to share vs keep private.
+
+        Determines the split between shared and private parameters based on
+        ``encoder_split`` and ``decoder_split`` fractions:
+        - Early encoder/decoder layers → private (personalized)
+        - Late encoder/decoder layers → shared (aggregated)
+
+        Returns
+        -------
+        None
         """
         ref_agent = next(iter(self.agents.values()))
         state_keys = list(ref_agent.state_dict().keys())
 
-        self.shared_keys = set()
-        self.private_keys = set()
+        self.shared_keys: set[str] = set()
+        self.private_keys: set[str] = set()
 
-        # Encoder layer indices
-        encoder_layers = set()
-        decoder_layers = set()
+        # Collect encoder and decoder layer indices
+        encoder_layers: list[int] = []
+        decoder_layers: list[int] = []
+
         for k in state_keys:
-            if k.startswith("encoder.linear_layers.") or k.startswith("encoder.layers."):
-                parts = k.split(".")
-                if parts[2].isdigit():
-                    encoder_layers.add(int(parts[2]))
-            elif k.startswith("decoder.layers."):
-                parts = k.split(".")
-                if parts[2].isdigit():
-                    decoder_layers.add(int(parts[2]))
+            if k.startswith('encoder.linear_layers.') or k.startswith('encoder.layers.'):
+                parts = k.split('.')
+                if len(parts) > 2 and parts[2].isdigit():
+                    encoder_layers.append(int(parts[2]))
+            elif k.startswith('decoder.layers.'):
+                parts = k.split('.')
+                if len(parts) > 2 and parts[2].isdigit():
+                    decoder_layers.append(int(parts[2]))
 
         encoder_layers = sorted(encoder_layers)
         decoder_layers = sorted(decoder_layers)
 
-        # Split indices
+        # Compute split indices based on fractions
         enc_split_idx = int(len(encoder_layers) * self.encoder_split)
         dec_split_idx = int(len(decoder_layers) * self.decoder_split)
 
+        # Layers after split index are shared; before are private
         shared_encoder_layers = set(encoder_layers[enc_split_idx:])
         shared_decoder_layers = set(decoder_layers[dec_split_idx:])
 
-        # Assign keys
+        # Classify each parameter key as shared or private
         for k in state_keys:
-            # Encoder
-            if k.startswith("encoder.linear_layers.") or k.startswith("encoder.layers."):
-                parts = k.split(".")
-                layer_id = int(parts[2])
-                if layer_id in shared_encoder_layers:
-                    self.shared_keys.add(k)
+            # Handle encoder parameters
+            if k.startswith('encoder.linear_layers.') or k.startswith('encoder.layers.'):
+                parts = k.split('.')
+                if len(parts) > 2 and parts[2].isdigit():
+                    layer_id = int(parts[2])
+                    if layer_id in shared_encoder_layers:
+                        self.shared_keys.add(k)
+                    else:
+                        self.private_keys.add(k)
                 else:
                     self.private_keys.add(k)
-            # Decoder
-            elif k.startswith("decoder.layers."):
-                parts = k.split(".")
-                layer_id = int(parts[2])
-                if layer_id in shared_decoder_layers:
-                    self.shared_keys.add(k)
+            # Handle decoder parameters
+            elif k.startswith('decoder.layers.'):
+                parts = k.split('.')
+                if len(parts) > 2 and parts[2].isdigit():
+                    layer_id = int(parts[2])
+                    if layer_id in shared_decoder_layers:
+                        self.shared_keys.add(k)
+                    else:
+                        self.private_keys.add(k)
                 else:
                     self.private_keys.add(k)
+            # All other parameters default to private
             else:
-                # Other parameters are private by default
                 self.private_keys.add(k)
 
-    @torch.no_grad()
-    def on_train_epoch_end(self):
+    def _validate_agents_for_fedavg(self) -> None:
+        """Validate that all agents have compatible architectures.
+
+        Raises
+        ------
+        TypeError
+            If agents have different model classes.
+        ValueError
+            If agent parameter names, shapes, or buffers don't match.
+
+        Returns
+        -------
+        None
         """
-        Neighbor-restricted FedAvg on shared parameters only.
-        Early layers remain personalized.
-        """
-        agents = {int(k): v for k, v in self.agents.items()}
-        new_states = {}
-
-        for idx_i, agent_i in agents.items():
-            neigh = self.hparams.neighbors[idx_i] | {idx_i}
-            state_i = agent_i.state_dict()
-
-            # Initialize shared part accumulator
-            avg_state = {k: torch.zeros_like(v) for k in self.shared_keys}
-
-            # Aggregate neighbors
-            for idx_j in neigh:
-                state_j = agents[idx_j].state_dict()
-                for k in self.shared_keys:
-                    avg_state[k] += state_j[k]
-
-            # Average
-            for k in avg_state:
-                avg_state[k] = avg_state[k].float() / len(neigh)
-
-            # Merge with private
-            new_state = {}
-            for k in state_i:
-                if k in self.shared_keys:
-                    new_state[k] = avg_state[k]
-                else:
-                    new_state[k] = state_i[k]
-
-            new_states[idx_i] = new_state
-
-        # Apply updates synchronously
-        for idx_i, agent in agents.items():
-            agent.load_state_dict(new_states[idx_i])
-
-
-    def _validate_agents_for_fedavg(self):
         agents = list(self.agents.values())
         ref = agents[0]
 
@@ -152,39 +188,90 @@ class PersonalizedFederatedCC(BaseOrchestrator):
             if buffers.keys() != ref_buffers.keys():
                 raise ValueError(f'Agent {i} buffer mismatch.')
 
+    @torch.no_grad()
+    def on_train_epoch_end(self) -> None:
+        """Perform neighbor-restricted FedAvg on shared parameters only.
+
+        Aggregates only the shared parameters (defined by ``shared_keys``) across
+        each agent and its neighbors. Private parameters remain unchanged.
+
+        The aggregation set for agent ``i`` is: {i} ∪ neighbors[i]
+
+        Returns
+        -------
+        None
+        """
+        # Convert ModuleDict string keys to integers
+        agents = {int(k): v for k, v in self.agents.items()}
+        new_states = {}
+
+        for idx_i, agent_i in agents.items():
+            # Include self in aggregation set
+            neigh = self.hparams.neighbors[int(idx_i)] | {int(idx_i)}
+            state_i = agent_i.state_dict()
+
+            # Initialize accumulator for shared parameters only
+            avg_state = {k: torch.zeros_like(state_i[k]) for k in self.shared_keys}
+
+            # Aggregate shared parameters from all neighbors
+            for idx_j in neigh:
+                state_j = agents[idx_j].state_dict()
+                for k in self.shared_keys:
+                    avg_state[k] += state_j[k]
+
+            # Normalize by number of agents in aggregation set
+            for k in avg_state:
+                avg_state[k] = avg_state[k].float() / len(neigh)
+
+            # Merge aggregated shared params with private params
+            new_state = {}
+            for k in state_i:
+                if k in self.shared_keys:
+                    new_state[k] = avg_state[k]
+                else:
+                    new_state[k] = state_i[k]
+
+            new_states[idx_i] = new_state
+
+        # Apply all updates synchronously
+        for idx_i, agent in agents.items():
+            agent.load_state_dict(new_states[idx_i])
+
     def _shared_eval(
         self,
         batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
         prefix: str,
-    ):
-        """A common step performed in the test and validation step.
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor]:
+        """Shared evaluation logic for train/val/test steps.
 
-        Args:
-            batch : dict[int, list[torch.Tensor]]
-                The current batch.
-            batch_idx : int
-                The batch index.
-            prefix : str
-                The step type for logging purposes.
+        Parameters
+        ----------
+        batch : dict[int, list[torch.Tensor]]
+            Dictionary mapping agent indices to their input batches.
+        batch_idx : int
+            Index of the current batch.
+        prefix : str
+            Prefix for logging (e.g., 'train', 'val', 'test').
 
-        Returns:
-            (outputs, total_loss) : tuple[
-                                        dict[int, torch.Tensor],
-                                        torch.Tensor,
-                                    ]
-                The tuple with the output of the network and the epoch loss.
+        Returns
+        -------
+        tuple[dict[int, torch.Tensor], torch.Tensor]
+            Tuple containing:
+            - outputs: Dictionary of agent embeddings
+            - total_loss: Sum of all agent losses
         """
         outputs = self(batch)
         total_loss = 0
 
-        on_step = True if prefix == "train" else False
+        on_step = prefix == 'train'
 
-        # Compute the personalized loss for each agent
+        # Compute loss for each agent
         for idx, agent in self.agents.items():
             batch_size = batch[int(idx)][0].size(0)
             agent_losses = agent.compute_loss(batch[int(idx)], outputs[int(idx)])
 
+            # Log individual loss components
             for loss_name, loss_val in agent_losses.items():
                 self.log(
                     f'{prefix}/{loss_name}_agent_{idx}',
@@ -198,6 +285,7 @@ class PersonalizedFederatedCC(BaseOrchestrator):
             loss = sum(agent_losses.values())
             total_loss += loss
 
+        # Log total loss
         self.log(
             f'{prefix}/total_loss',
             total_loss,
@@ -209,8 +297,26 @@ class PersonalizedFederatedCC(BaseOrchestrator):
 
         return outputs, total_loss
 
-    def communicate(self, idx_i: int, idx_j: int):
-        pass
+    def communicate(
+        self,
+        idx_i: int,
+        idx_j: int,
+    ) -> torch.Tensor:
+        """Communication between two agents (no-op for personalized federated).
+
+        Parameters
+        ----------
+        idx_i : int
+            Index of the first agent.
+        idx_j : int
+            Index of the second agent.
+
+        Returns
+        -------
+        torch.Tensor
+            Empty tensor (placeholder for interface compatibility).
+        """
+        return torch.tensor([])
 
 
 if __name__ == '__main__':

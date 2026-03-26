@@ -296,7 +296,7 @@ class CSIDataModule(l.LightningDataModule):
         bias: float = 4.0,
     ) -> tuple[int, np.ndarray | None]:
         """
-        Take one step in the neighbor graph, optionally biased toward a heading.
+        Take one step in the neighbor graph, optionally biased toward heading.
 
         Parameters
         ----------
@@ -319,9 +319,7 @@ class CSIDataModule(l.LightningDataModule):
             Returns None if input heading was None.
         """
         k_actual = min(k + 1, len(self.rx_pos_all_masked))
-        _, neigh = self.kdtree.query(
-            self.rx_pos_all_masked[current], k=k_actual
-        )
+        _, neigh = self.kdtree.query(self.rx_pos_all_masked[current], k=k_actual)
         neigh = neigh[neigh != current]
 
         if heading is None:
@@ -336,9 +334,7 @@ class CSIDataModule(l.LightningDataModule):
         chosen = int(self.rng.choice(neigh, p=probs))
 
         # Update heading from the actual movement taken
-        new_dir = (
-            self.rx_pos_all_masked[chosen] - self.rx_pos_all_masked[current]
-        )
+        new_dir = self.rx_pos_all_masked[chosen] - self.rx_pos_all_masked[current]
         norm = np.linalg.norm(new_dir)
         new_heading = new_dir / norm if norm > 1e-8 else heading
 
@@ -356,9 +352,7 @@ class CSIDataModule(l.LightningDataModule):
         """
         # TODO self.H_users is not available
         if self.bias_sampling:
-            power = np.linalg.norm(
-                self.H_users.reshape(len(self.H_users), -1), axis=1
-            )
+            power = np.linalg.norm(self.H_users.reshape(len(self.H_users), -1), axis=1)
             prob = power / power.sum()
             idx = self.rng.choice(len(self.rx_pos_all_masked), p=prob)
         else:
@@ -418,16 +412,10 @@ class CSIDataModule(l.LightningDataModule):
                 prev_dir = None
                 for t in range(1, T):
                     step = float(self.rng.uniform(*self.cfg['random_step']))
-                    if (
-                        prev_dir is None
-                        or self.rng.random() > self.cfg['random_keep_dir']
-                    ):
+                    if prev_dir is None or self.rng.random() > self.cfg['random_keep_dir']:
                         ang = float(self.rng.uniform(0, 2 * np.pi))
                     else:
-                        ang = float(
-                            np.arctan2(prev_dir[1], prev_dir[0])
-                            + self.rng.normal(0, 0.5)
-                        )
+                        ang = float(np.arctan2(prev_dir[1], prev_dir[0]) + self.rng.normal(0, 0.5))
                     d = np.array([np.cos(ang), np.sin(ang)])
                     xy[t] = xy[t - 1] + step * d
                     prev_dir = d
@@ -435,7 +423,7 @@ class CSIDataModule(l.LightningDataModule):
 
             case 'full':
                 # Bounded random walk on the k-NN neighbor graph.
-                # Visits exactly T feasible points without any coverage requirement.
+                # Visits exactly T feasible points w/o coverage requirement.
                 N = len(self.rx_pos_all_masked)
                 current = int(self.rng.integers(0, N))
                 traj = np.empty(T, dtype=np.int64)
@@ -475,9 +463,7 @@ class CSIDataModule(l.LightningDataModule):
                 for length, heading in zip([T1, T2], headings):
                     for step in range(length):
                         traj[offset + step] = self.valid_idxs[current]
-                        current, heading = self._neighbor_step(
-                            current, heading
-                        )
+                        current, heading = self._neighbor_step(current, heading)
                     offset += length
                 return traj
 
@@ -506,9 +492,7 @@ class CSIDataModule(l.LightningDataModule):
             return -1
         return int(idxs[int(self.rng.integers(0, len(idxs)))])
 
-    def _shared_gen(
-        self, num_users
-    ) -> tuple[dict[Any, Any], dict[Any, Any], dict[Any, Any]]:
+    def _shared_gen(self, num_users) -> tuple[dict[Any, Any], dict[Any, Any], dict[Any, Any]]:
         self.idx_to_neg_pos = {}
         for user_id in range(num_users):
             # Random trajectory length
@@ -538,12 +522,8 @@ class CSIDataModule(l.LightningDataModule):
                 pos = np.concatenate([pos_left, pos_right])
 
                 # Negatives: steps outside in_window but within out_window
-                neg_left = rx_idxs[
-                    max(0, t - self.out_window) : max(0, t - self.in_window)
-                ]
-                neg_right = rx_idxs[
-                    t + self.in_window + 1 : t + self.out_window + 1
-                ]
+                neg_left = rx_idxs[max(0, t - self.out_window) : max(0, t - self.in_window)]
+                neg_right = rx_idxs[t + self.in_window + 1 : t + self.out_window + 1]
                 neg = np.concatenate([neg_left, neg_right])
 
                 if len(pos) == 0 or len(neg) == 0:
@@ -575,9 +555,7 @@ class CSIDataModule(l.LightningDataModule):
             )
 
         for bs_1, bs_2 in self.edge_set:
-            shared_mask = (
-                self.bs_coords[bs_1]['mask'] & self.bs_coords[bs_2]['mask']
-            )
+            shared_mask = self.bs_coords[bs_1]['mask'] & self.bs_coords[bs_2]['mask']
             shared_pos = self.rx_pos_all[np.where(shared_mask)[0]]
             channels_bs_1 = self.ds[bs_1].channels[shared_mask]
             channels_bs_2 = self.ds[bs_2].channels[shared_mask]
@@ -627,12 +605,9 @@ class CSIDataModule(l.LightningDataModule):
         # Channel computation arguments
         ch_kwargs = self.cfg.get('compute_channels') or {}
 
-        max_subcarriers = self.cfg.get('compute_channels').get(
-            'max_subcarriers', 1
-        )
-        
+        max_subcarriers = self.cfg.get('compute_channels').get('max_subcarriers', 1)
+
         del ch_kwargs['max_subcarriers']
-        
 
         ch_kwargs['ue_antenna']['shape'] = np.array(
             ch_kwargs.get('ue_antenna', {}).get('shape', [1, 1])
@@ -641,9 +616,7 @@ class CSIDataModule(l.LightningDataModule):
 
         self.n_agents = len(self.ds.bs_pos)
 
-        self.rx_pos_all = (
-            self.ds[0].rx_pos if len(self.ds.rx_pos) == 3 else self.ds.rx_pos
-        )
+        self.rx_pos_all = self.ds[0].rx_pos if len(self.ds.rx_pos) == 3 else self.ds.rx_pos
         self.valid_rx_pos = {}
         union_mask = np.zeros(self.rx_pos_all.shape[0], dtype=bool)
 
@@ -722,8 +695,8 @@ class CSIDataModule(l.LightningDataModule):
         ) = self._shared_gen(test_num_users)
 
         # Validation dataset
-        self.val_local_dataset, self.val_shared_dataset, self.val_traj_dict = (
-            self._shared_gen(val_num_users)
+        self.val_local_dataset, self.val_shared_dataset, self.val_traj_dict = self._shared_gen(
+            val_num_users
         )
 
         sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs[0]])
@@ -883,11 +856,7 @@ class CSIDataModule(l.LightningDataModule):
 
         ax.legend()
         plt.tight_layout()
-        plot_name = (
-            f'{self.cfg["scenario"]}_bs_coverage.png'
-            if plot_name is None
-            else plot_name
-        )
+        plot_name = f'{self.cfg["scenario"]}_bs_coverage.png' if plot_name is None else plot_name
         plt.savefig(plot_name, dpi=300)
         plt.close()
 
@@ -901,7 +870,7 @@ class CSIDataModule(l.LightningDataModule):
         show_map: bool = True,
     ) -> None:
         """
-        Plot the first n trajectories from a stage dataset over the BS coverage area.
+        Plot the first n trajectories from a stage dataset over BS coverage.
 
         Parameters
         ----------
@@ -917,16 +886,7 @@ class CSIDataModule(l.LightningDataModule):
             terrain, etc.) as a 2D background layer.  Falls back gracefully
             when the scene is unavailable.
         """
-        assert stage in ('train', 'val', 'test'), (
-            "stage must be one of 'train', 'val', 'test'"
-        )
-
-        # Select the local dataset dict for the requested stage
-        local_datasets = {
-            'train': self.train_local_dataset,
-            'val': self.val_local_dataset,
-            'test': self.test_local_dataset,
-        }[stage]
+        assert stage in ('train', 'val', 'test'), "stage must be one of 'train', 'val', 'test'"
 
         # Use the unfiltered union-wide trajectory dict for this stage
         idx_to_neg_pos = {
@@ -937,7 +897,7 @@ class CSIDataModule(l.LightningDataModule):
 
         # Group rx indices per user, preserving trajectory insertion order
         user_points: dict[int, list[int]] = defaultdict(list)
-        for user_id, rx_idx in idx_to_neg_pos.keys():
+        for user_id, rx_idx in idx_to_neg_pos.items():
             user_points[user_id].append(rx_idx)
 
         # Take the first n users (in insertion order)
@@ -954,9 +914,7 @@ class CSIDataModule(l.LightningDataModule):
         # Render scenario map as background layer
         has_map = False
         if show_map:
-            scene = getattr(self.ds, 'scene', None) or getattr(
-                self.ds[0], 'scene', None
-            )
+            scene = getattr(self.ds, 'scene', None) or getattr(self.ds[0], 'scene', None)
             if scene is not None:
                 try:
                     n_patches_before = len(ax.patches)
@@ -1018,12 +976,10 @@ class CSIDataModule(l.LightningDataModule):
             legend_handles.append(handle)
 
         # Assign a distinct color to each trajectory
-        traj_colors = [
-            plt.colormaps['hsv'](i / max(actual_n, 1)) for i in range(actual_n)
-        ]
+        traj_colors = [plt.colormaps['hsv'](i / max(actual_n, 1)) for i in range(actual_n)]
 
         for i, user_id in enumerate(selected_users):
-            # rx_idxs are already in trajectory order (insertion order preserved)
+            # rx_idxs are already in trajectory order (insertion order kept)
             rx_idxs = user_points[user_id]
             positions = self.rx_pos_all[rx_idxs, :2]
             color = traj_colors[i]
@@ -1058,16 +1014,12 @@ class CSIDataModule(l.LightningDataModule):
         ax.set_xlabel('x [m]')
         ax.set_ylabel('y [m]')
         ax.set_title(f'First {actual_n} trajectories — {stage} stage')
-        # Use only our handles so scene labels (terrain, buildings…) are excluded
-        ax.legend(
-            handles=legend_handles, loc='upper right', fontsize=7, ncol=2
-        )
+        # Use only our handles so scene labels (terrain, buildings) excluded
+        ax.legend(handles=legend_handles, loc='upper right', fontsize=7, ncol=2)
         plt.tight_layout()
 
         plot_name = (
-            f'{self.cfg["scenario"]}_{stage}_trajectories.png'
-            if plot_name is None
-            else plot_name
+            f'{self.cfg["scenario"]}_{stage}_trajectories.png' if plot_name is None else plot_name
         )
         plt.savefig(plot_name, dpi=300)
         plt.close()

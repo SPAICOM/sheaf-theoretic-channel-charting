@@ -84,16 +84,17 @@ class OptimalTransportCC(BaseOrchestrator):
         lmb_max = self.hparams['lmb_max']
         schedule = self.hparams['lmb_schedule']
 
-        if t == 0.0:
-            self._lmb = lmb_min
-        elif schedule == 'linear':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * t
-        elif schedule == 'exponential':
-            self._lmb = lmb_min * (lmb_max / lmb_min) ** t
-        elif schedule == 'cosine':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
-        else:
-            raise ValueError(f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine.")
+        match schedule:
+            case 'linear':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * t
+            case 'exponential':
+                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
+            case 'cosine':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
+            case _:
+                raise ValueError(
+                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
+                )
 
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
@@ -121,7 +122,7 @@ class OptimalTransportCC(BaseOrchestrator):
                 The tuple with the output of the network and the epoch loss.
         """
         private_outputs = self(batch)
-        on_step = True if prefix == "train" else False
+        on_step = prefix == 'train'
 
         # Compute embeddings of the overlapping areas
         shared_outputs = {
@@ -158,44 +159,25 @@ class OptimalTransportCC(BaseOrchestrator):
 
             total_private_loss += sum(agent_losses.values())
 
-        self.log(
-            f'{prefix}/total_private_loss',
-            total_private_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-
         # Compute the transport losses
         for i, j in self.hparams['edges']:
-            transport_i = self.transport_layers[f'{i}_{j}'][str(i)](
-                shared_outputs[(i, j)][i]
-            )
+            transport_i = self.transport_layers[f'{i}_{j}'][str(i)](shared_outputs[(i, j)][i])
 
-            transport_j = self.transport_layers[f'{i}_{j}'][str(j)](
-                shared_outputs[(i, j)][j]
-            )
+            transport_j = self.transport_layers[f'{i}_{j}'][str(j)](shared_outputs[(i, j)][j])
 
             # Edge specific transport loss
             transport_loss = (torch.linalg.norm(transport_i - transport_j, dim=1) ** 2).mean()
 
             total_transport_loss += transport_loss
 
-        self.log(
-            f'{prefix}/total_alignment_loss',
-            total_transport_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
+        total_loss = total_private_loss + self._lmb * total_transport_loss
 
-        total_loss = (
-            total_private_loss + self._lmb * total_transport_loss
-        )
-
-        self.log(
-            f'{prefix}/total_loss',
-            total_loss,
+        self.log_dict(
+            {
+                f'{prefix}/total_private_loss': total_private_loss,
+                f'{prefix}/total_alignment_loss': total_transport_loss,
+                f'{prefix}/total_loss': total_loss,
+            },
             on_step=on_step,
             on_epoch=True,
             batch_size=batch_size,

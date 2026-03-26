@@ -24,7 +24,7 @@ class FlatBundleCC(BaseOrchestrator):
             weight_decay=weight_decay,
             lr=lr,
         )
-        
+
         self._lmb = lmb_min
 
         # Network description
@@ -51,30 +51,31 @@ class FlatBundleCC(BaseOrchestrator):
         lmb_max = self.hparams['lmb_max']
         schedule = self.hparams['lmb_schedule']
 
-        if t == 0.0:
-            self._lmb = lmb_min
-        elif schedule == 'linear':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * t
-        elif schedule == 'exponential':
-            self._lmb = lmb_min * (lmb_max / lmb_min) ** t
-        elif schedule == 'cosine':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
-        else:
-            raise ValueError(f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine.")
+        match schedule:
+            case 'linear':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * t
+            case 'exponential':
+                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
+            case 'cosine':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
+            case _:
+                raise ValueError(
+                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
+                )
 
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     @torch.no_grad()
     def on_train_epoch_end(self):
-        """Alignment step performed via Kabsch algorithm on cross-covariance terms
-        computed over the full shared dataset (all examples, not just one batch).
+        """Alignment via Kabsch on cross-covariance terms computed over
+        the full shared dataset (all examples, not just one batch).
         """
 
         train_shared_dataset = self.trainer.datamodule.train_shared_dataset
 
         # Accumulate embeddings for both agents over the full shared dataset
         shared_embeddings = {}
-        for edge_key, dataset in train_shared_dataset.items():
+        for dataset in train_shared_dataset.values():
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
@@ -102,7 +103,7 @@ class FlatBundleCC(BaseOrchestrator):
                     continue
                 neighbor_str = edge[1] if edge[0] == agent_str else edge[0]
 
-                Z_a = shared_embeddings[edge][agent_str]     # (N, d)
+                Z_a = shared_embeddings[edge][agent_str]  # (N, d)
                 Z_n = shared_embeddings[edge][neighbor_str]  # (N, d)
                 R_n = self.local_reference_frames[neighbor_str].to(self.device)
 
@@ -139,7 +140,7 @@ class FlatBundleCC(BaseOrchestrator):
                 The tuple with the output of the network and the epoch loss.
         """
         private_outputs = self(batch)
-        on_step = True if prefix == "train" else False
+        on_step = prefix == 'train'
 
         # Compute embeddings of the overlapping areas
         shared_outputs = {
@@ -176,39 +177,24 @@ class FlatBundleCC(BaseOrchestrator):
 
             total_private_loss += sum(agent_losses.values())
 
-        self.log(
-            f'{prefix}/total_private_loss',
-            total_private_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-
         # Compute the alignment losses
         for i, j in self.hparams['edges']:
-            aligned_i = shared_outputs[(i,j)][i] @ self.local_reference_frames[i].to(self.device).T
-            aligned_j = shared_outputs[(i,j)][j] @ self.local_reference_frames[j].to(self.device).T
+            aligned_i = shared_outputs[(i, j)][i] @ self.local_reference_frames[i].to(self.device).T
+            aligned_j = shared_outputs[(i, j)][j] @ self.local_reference_frames[j].to(self.device).T
 
             # Edge specific transport loss
             alignment_loss = (torch.linalg.norm(aligned_i - aligned_j, dim=1) ** 2).mean()
 
             total_alignment_loss += alignment_loss
 
-        self.log(
-            f'{prefix}/total_alignment_loss',
-            total_alignment_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
+        total_loss = total_private_loss + self._lmb * total_alignment_loss
 
-        total_loss = (
-            total_private_loss + self._lmb * total_alignment_loss
-        )
-
-        self.log(
-            f'{prefix}/total_loss',
-            total_loss,
+        self.log_dict(
+            {
+                f'{prefix}/total_private_loss': total_private_loss,
+                f'{prefix}/total_alignment_loss': total_alignment_loss,
+                f'{prefix}/total_loss': total_loss,
+            },
             on_step=on_step,
             on_epoch=True,
             batch_size=batch_size,
@@ -219,6 +205,7 @@ class FlatBundleCC(BaseOrchestrator):
 
     def communicate(self):
         pass
+
 
 if __name__ == '__main__':
     pass

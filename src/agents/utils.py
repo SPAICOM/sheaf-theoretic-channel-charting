@@ -28,9 +28,7 @@ class DistanceLayer(nn.Module):
             Distance metric: 'euclidean' or 'cosine'.
         """
         super().__init__()
-        assert distance_mode in {'euclidean', 'cosine'}, (
-            'Provide a valid distance mode'
-        )
+        assert distance_mode in {'euclidean', 'cosine'}, 'Provide a valid distance mode'
 
         self.distance_mode = distance_mode
 
@@ -74,7 +72,7 @@ class DistanceLayer(nn.Module):
                 # Cosine similarity for each positive
                 sim = (z1 * z2).sum(dim=-1)  # (B, K)
 
-                # Convert to cosine distance, sum over positives/negatives → (B,)
+                # Convert to cosine distance, sum over pos/neg → (B,)
                 dist = 1 - sim  # (B, K)
                 return dist.sum(dim=1)
 
@@ -106,12 +104,8 @@ class LossLayer(nn.Module):
             Margin for contrastive/triplet loss.
         """
         super().__init__()
-        assert loss_mode in {'contrastive', 'triplet'}, (
-            'Provide a valid layer mode'
-        )
-        assert distance_mode in {'euclidean', 'cosine'}, (
-            'Provide a valid distance mode'
-        )
+        assert loss_mode in {'contrastive', 'triplet'}, 'Provide a valid layer mode'
+        assert distance_mode in {'euclidean', 'cosine'}, 'Provide a valid distance mode'
 
         self.margin = margin
         self.loss_mode = loss_mode
@@ -195,12 +189,8 @@ class SiameseLayer(nn.Module):
             Margin for loss computation.
         """
         super().__init__()
-        assert loss_mode in ['contrastive', 'triplet'], (
-            'Provide a valid layer mode'
-        )
-        assert distance_mode in ['euclidean', 'cosine'], (
-            'Provide a valid distance mode'
-        )
+        assert loss_mode in ['contrastive', 'triplet'], 'Provide a valid layer mode'
+        assert distance_mode in ['euclidean', 'cosine'], 'Provide a valid distance mode'
 
         self.loss_mode = loss_mode
         self.distance_mode = distance_mode

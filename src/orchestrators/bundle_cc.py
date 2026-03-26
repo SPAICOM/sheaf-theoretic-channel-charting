@@ -1,3 +1,12 @@
+"""Bundle Channel Charting orchestrator with orthogonal Procrustes alignment.
+
+This module implements the :class:`BundleCC` orchestrator which uses a
+sheaf-theoretic approach with orthogonal maps to align embeddings across
+base stations via the orthogonal Procrustes problem.
+"""
+
+from __future__ import annotations
+
 import math
 
 import torch
@@ -8,16 +17,60 @@ from src.orchestrators.base_orchestrator import BaseOrchestrator
 
 
 class BundleCC(BaseOrchestrator):
+    """Bundle Channel Charting orchestrator with orthogonal alignment.
+
+    This orchestrator uses a sheaf-theoretic approach where each edge in the
+    communication graph has an associated orthogonal transformation. These
+    transformations are learned via the orthogonal Procrustes problem:
+
+        O_ij = argmin_O ||Z_i - Z_j @ O^T||_F  s.t. O^T O = I
+
+    The solution is given by the SVD of the cross-covariance matrix Z_i^T @ Z_j.
+
+    Parameters
+    ----------
+    agents : dict[int, nn.Module]
+        Dictionary mapping agent indices to their neural network modules.
+    neighbors : dict[int, set[int]]
+        Dictionary mapping each agent index to the set of neighbor indices.
+    lr : float
+        Learning rate for the optimizer.
+    weight_decay : float, optional
+        Weight decay for regularization (default: 0.0).
+    lmb_min : float, optional
+        Minimum value for the alignment loss weight (default: 1e-3).
+    lmb_max : float, optional
+        Maximum value for the alignment loss weight (default: 1.0).
+    lmb_schedule : str, optional
+        Schedule for lambda: 'linear', 'exponential', or 'cosine' (default: 'cosine').
+
+    Attributes
+    ----------
+    orthogonal_maps : dict
+        Dictionary mapping edge tuples to orthogonal transformation matrices.
+    _lmb : float
+        Current value of the alignment loss weight.
+
+    Example
+    -------
+    >>> orchestrator = BundleCC(
+    ...     agents={0: agent_0, 1: agent_1},
+    ...     neighbors={0: {1}, 1: {0}},
+    ...     lr=1e-3,
+    ...     lmb_schedule='cosine',
+    ... )
+    """
+
     def __init__(
         self,
         agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
-        weight_decay: float,
+        weight_decay: float = 0.0,
         lmb_min: float = 1e-3,
         lmb_max: float = 1.0,
         lmb_schedule: str = 'cosine',
-    ):
+    ) -> None:
         super().__init__(
             agents=agents,
             neighbors=neighbors,
@@ -26,7 +79,7 @@ class BundleCC(BaseOrchestrator):
         )
         self._lmb = lmb_min
 
-        # Network description
+        # Build edge list from neighbor graph (undirected)
         self.hparams['edges'] = list(
             {
                 tuple(sorted((str(agent), str(neighbor))))
@@ -35,15 +88,26 @@ class BundleCC(BaseOrchestrator):
             }
         )
 
-        # One orthogonal map per edge, initialised to identity
+        # Initialize orthogonal maps as identity matrices
+        # Each edge gets its own orthogonal transformation
         d = self.agents[list(self.agents.keys())[0]].out_dim
         self.orthogonal_maps = {
-            edge: torch.eye(d, device=self.device)
-            for edge in self.hparams['edges']
+            edge: torch.eye(d, device=self.device) for edge in self.hparams['edges']
         }
 
-    def on_train_epoch_start(self):
-        """Update lmb according to the schedule at the start of each epoch."""
+    def on_train_epoch_start(self) -> None:
+        """Update the alignment weight lambda according to the schedule.
+
+        Computes the normalized epoch progress t in [0, 1] and updates
+        ``self._lmb`` based on the configured schedule:
+        - linear: lmb_min + (lmb_max - lmb_min) * t
+        - exponential: lmb_min * (lmb_max / lmb_min) ^ t
+        - cosine: lmb_min + (lmb_max - lmb_min) * (1 - cos(pi * t)) / 2
+
+        Returns
+        -------
+        None
+        """
         max_epochs = self.trainer.max_epochs
         t = self.current_epoch / max(max_epochs - 1, 1)  # normalized progress [0, 1]
 
@@ -51,31 +115,49 @@ class BundleCC(BaseOrchestrator):
         lmb_max = self.hparams['lmb_max']
         schedule = self.hparams['lmb_schedule']
 
-        if t == 0.0:
-            self._lmb = lmb_min
-        elif schedule == 'linear':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * t
-        elif schedule == 'exponential':
-            self._lmb = lmb_min * (lmb_max / lmb_min) ** t
-        elif schedule == 'cosine':
-            self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
-        else:
-            raise ValueError(f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine.")
+        match schedule:
+            case 'linear':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * t
+            case 'exponential':
+                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
+            case 'cosine':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
+            case _:
+                raise ValueError(
+                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
+                )
 
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     @torch.no_grad()
-    def on_train_epoch_end(self):
-        """Update each edge's orthogonal map by solving the orthogonal Procrustes
-        problem on the full shared dataset.
+    def on_train_epoch_end(self) -> None:
+        """Update each edge's orthogonal map via orthogonal Procrustes.
 
-        For edge (i, j), find O_ij = argmin_O ||Z_i - Z_j @ O^T||_F
-        s.t. O^T O = I.  Solution via SVD of the cross-covariance Z_i^T @ Z_j.
+        For each edge (i, j), solves the orthogonal Procrustes problem:
+
+            O_ij = argmin_O ||Z_i - Z_j @ O^T||_F
+            s.t. O^T O = I
+
+        The solution is computed via SVD of the cross-covariance matrix:
+            cross_cov = Z_i^T @ Z_j = U @ S @ V^T
+            O_ij = U @ V^T
+
+        The orthogonal maps are computed over the full shared dataset
+        (all batches, not just one) for accuracy.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - This uses ``train_shared_dataset`` from the datamodule.
+        - Embeddings are accumulated over the full dataset before SVD.
         """
         train_shared_dataset = self.trainer.datamodule.train_shared_dataset
 
         orthogonal_maps_temp = {}
-        for edge_key, dataset in train_shared_dataset.items():
+        for dataset in train_shared_dataset.values():
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
@@ -88,45 +170,48 @@ class BundleCC(BaseOrchestrator):
                 embs_1.append(self.agents[bs1_str](H_1, triplet_mode=False))
                 embs_2.append(self.agents[bs2_str](H_2, triplet_mode=False))
 
-            Z_i = torch.cat(embs_1, dim=0)  # (N, d)
-            Z_j = torch.cat(embs_2, dim=0)  # (N, d)
+            # Stack all embeddings: (N, d)
+            Z_i = torch.cat(embs_1, dim=0)
+            Z_j = torch.cat(embs_2, dim=0)
 
-            # Cross-covariance: (d, d)
+            # Compute cross-covariance matrix: (d, d)
             cross_cov = Z_i.T @ Z_j
 
-            # Orthogonal Procrustes: closest proper rotation to cross_cov
+            # Orthogonal Procrustes solution via SVD: O = U @ V^T
+            # This gives the closest orthogonal matrix to cross_cov
             U, _, Vt = torch.linalg.svd(cross_cov)
-            # Sigma_tilde = torch.ones(U.shape[1], device=self.device)
-            # Sigma_tilde[-1] = torch.linalg.det(U @ Vt)
-            # orthogonal_maps_temp[edge] = U @ torch.diag(Sigma_tilde) @ Vt
             orthogonal_maps_temp[edge] = U @ Vt
 
         self.orthogonal_maps = orthogonal_maps_temp
 
     def _shared_eval(
         self,
-        batch: dict[str, list[torch.Tensor]],
+        batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
         prefix: str,
-    ):
-        """A common step performed in the test and validation step.
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor]:
+        """Shared evaluation logic for train/val/test steps.
 
-        Args:
-            batch : dict[str, list[torch.Tensor]]
-                The current batch.
-            batch_idx : int
-                The batch index.
-            prefix : str
-                The step type for logging purposes.
+        Parameters
+        ----------
+        batch : dict[int, list[torch.Tensor]]
+            Dictionary mapping agent indices to their input batches.
+        batch_idx : int
+            Index of the current batch.
+        prefix : str
+            Prefix for logging (e.g., 'train', 'val', 'test').
 
-        Returns:
-            (output, total_loss) : tuple[dict[int, torch.Tensor], torch.Tensor]
-                The tuple with the output of the network and the epoch loss.
+        Returns
+        -------
+        tuple[dict[int, torch.Tensor], torch.Tensor]
+            Tuple containing:
+            - outputs: Dictionary of agent embeddings
+            - total_loss: Combined private + alignment loss
         """
         private_outputs = self(batch)
-        on_step = True if prefix == "train" else False
+        on_step = prefix == 'train'
 
-        # Compute embeddings of the overlapping areas
+        # Compute embeddings of the overlapping areas (shared regions)
         shared_outputs = {
             (i, j): {
                 i: self.agents[i](
@@ -144,7 +229,7 @@ class BundleCC(BaseOrchestrator):
         total_private_loss = 0
         total_alignment_loss = 0
 
-        # Compute the personalized loss for each agent
+        # Compute private loss for each agent
         for idx, agent in self.agents.items():
             batch_size = batch[int(idx)][0].size(0)
             agent_losses = agent.compute_loss(batch[int(idx)], private_outputs[int(idx)])
@@ -161,40 +246,26 @@ class BundleCC(BaseOrchestrator):
 
             total_private_loss += sum(agent_losses.values())
 
-        self.log(
-            f'{prefix}/total_private_loss',
-            total_private_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-
-        # Compute the alignment losses
+        # Compute alignment loss between overlapping regions using orthogonal maps
         for i, j in self.hparams['edges']:
-            emb_i = shared_outputs[(i, j)][i]   # (B, d)
-            emb_j = shared_outputs[(i, j)][j]   # (B, d)
+            emb_i = shared_outputs[(i, j)][i]  # (B, d)
+            emb_j = shared_outputs[(i, j)][j]  # (B, d)
             O_ij = self.orthogonal_maps[(i, j)].to(self.device)  # (d, d)
 
-            # Alignment: ||emb_i - emb_j @ O_ij^T||² per sample
+            # Alignment loss: ||emb_i - emb_j @ O_ij^T||² per sample
             alignment_loss = (torch.linalg.norm(emb_i - emb_j @ O_ij.T, dim=1) ** 2).mean()
 
             total_alignment_loss += alignment_loss
 
-        self.log(
-            f'{prefix}/total_alignment_loss',
-            total_alignment_loss,
-            on_step=on_step,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
+        # Combined loss: private loss + lambda * alignment loss
+        total_loss = total_private_loss + self._lmb * total_alignment_loss
 
-        total_loss = (
-            total_private_loss + self._lmb * total_alignment_loss
-        )
-
-        self.log(
-            f'{prefix}/total_loss',
-            total_loss,
+        self.log_dict(
+            {
+                f'{prefix}/total_private_loss': total_private_loss,
+                f'{prefix}/total_alignment_loss': total_alignment_loss,
+                f'{prefix}/total_loss': total_loss,
+            },
             on_step=on_step,
             on_epoch=True,
             batch_size=batch_size,
@@ -203,8 +274,27 @@ class BundleCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def communicate(self):
-        pass
+    def communicate(
+        self,
+        idx_i: int,
+        idx_j: int,
+    ) -> torch.Tensor:
+        """Communication between two agents (handled in on_train_epoch_end).
+
+        Parameters
+        ----------
+        idx_i : int
+            Index of the first agent.
+        idx_j : int
+            Index of the second agent.
+
+        Returns
+        -------
+        torch.Tensor
+            Empty tensor (placeholder for interface compatibility).
+        """
+        return torch.tensor([])
+
 
 if __name__ == '__main__':
     pass

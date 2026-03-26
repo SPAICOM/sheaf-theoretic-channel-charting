@@ -6,6 +6,9 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import hydra
+import lightning as L
+from hydra.utils import instantiate
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
 
 from src import CSIDataModule
@@ -24,7 +27,7 @@ def main(cfg: DictConfig):
     dm.prepare_data()
     dm.setup('fit')
 
-    loader = dm.train_dataloader()
+    dm.train_dataloader()
     # print('LOCAL DATASETS')
     # for k, ds in dm.train_local_dataset.items():
     #     print(k, len(ds))

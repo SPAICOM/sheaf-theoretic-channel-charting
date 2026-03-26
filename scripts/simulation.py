@@ -44,9 +44,7 @@ def main(cfg: DictConfig) -> None:
 
     # Log full Hydra config to WandB
     if logger is not None:
-        logger.experiment.config.update(
-            OmegaConf.to_container(cfg, resolve=True)
-        )
+        logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True))
 
     # ===================================================
     #             Define the Trainer

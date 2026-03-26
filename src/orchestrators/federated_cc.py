@@ -1,3 +1,15 @@
+"""Federated Channel Charting orchestrator.
+
+This module implements the :class:`FederatedCC` orchestrator which performs
+federated averaging across multiple agents in a wireless network.
+
+The key idea is to aggregate model parameters across agents that are within
+communication range of each other, rather than requiring all agents to
+participate in each round of training.
+"""
+
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 
@@ -5,13 +17,49 @@ from src.orchestrators.base_orchestrator import BaseOrchestrator
 
 
 class FederatedCC(BaseOrchestrator):
+    """Federated Channel Charting orchestrator.
+
+    This orchestrator implements a neighbor-restricted Federated Averaging (FedAvg)
+    strategy where each agent aggregates its model parameters with neighboring agents
+    in the wireless network topology.
+
+    For each agent ``i``, the updated parameters are computed as the average of
+    the parameters of the agents in the set:
+        {i} ∪ neighbors[i]
+
+    Parameters
+    ----------
+    agents : dict[int, nn.Module]
+        Dictionary mapping agent indices to their neural network modules.
+    neighbors : dict[int, set[int]]
+        Dictionary mapping each agent index to the set of neighbor indices.
+        Defines which agents can communicate and share parameters.
+    lr : float
+        Learning rate for the optimizer.
+    weight_decay : float, optional
+        Weight decay for regularization (default: 0.0).
+
+    Raises
+    ------
+    TypeError
+        If agents have different model architectures.
+    ValueError
+        If agent parameter names, shapes, or buffers don't match.
+
+    Notes
+    -----
+    - All agents must have identical architecture (validated in ``__init__``).
+    - Both model parameters and buffers (e.g., BatchNorm statistics) are aggregated.
+    - The aggregation is synchronous: first compute all new states, then apply them.
+    """
+
     def __init__(
         self,
         agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
-        weight_decay: float,
-    ):
+        weight_decay: float = 0.0,
+    ) -> None:
         super().__init__(
             agents=agents,
             neighbors=neighbors,
@@ -21,7 +69,25 @@ class FederatedCC(BaseOrchestrator):
 
         self._validate_agents_for_fedavg()
 
-    def _validate_agents_for_fedavg(self):
+    def _validate_agents_for_fedavg(self) -> None:
+        """Validate that all agents have compatible architectures.
+
+        Checks that all agents share the same:
+        - Model class/type
+        - Parameter names and shapes
+        - Registered buffers
+
+        Raises
+        ------
+        TypeError
+            If agents have different model classes.
+        ValueError
+            If agent parameter names, shapes, or buffers don't match.
+
+        Returns
+        -------
+        None
+        """
         agents = list(self.agents.values())
         ref = agents[0]
 
@@ -49,106 +115,104 @@ class FederatedCC(BaseOrchestrator):
         """Perform neighbor-restricted Federated Averaging.
 
         This method implements a localized variant of Federated Averaging
-        where, instead of aggregating parameters across all agents, each agent
-        updates its parameters by averaging only over its local neighborhood
-        in a graph.
+        where each agent updates its parameters by averaging with neighbors.
 
         For each agent ``i``, the updated parameters are computed as the
         average of the parameters of the agents in the set:
-
             {i} ∪ neighbors[i]
 
         The aggregation is performed synchronously:
-        1. All new averaged states are computed and stored.
-        2. The updated states are then loaded into the agents.
+        1. Compute all new averaged states and store them.
+        2. Apply the updated states to all agents.
 
-        This avoids in-place updates that would otherwise bias the aggregation.
+        This two-phase approach avoids bias from in-place parameter updates
+        during the aggregation loop.
 
-        Notes:
-            - The method assumes that all agents share the same architecture
-              and parameter structure (validated beforehand).
-            - Both model parameters and buffers (e.g., BatchNorm statistics or
-              registered buffers) are included via ``state_dict()``.
-            - The neighborhood structure must be provided in
-              ``self.hparams.neighbors`` as a mapping:
-                  dict[int, set[int]]
-            - Each agent is always included in its own aggregation.
+        Returns
+        -------
+        None
 
-        Raises:
-            KeyError: If an agent index is missing from the neighbor
-                      dictionary.
+        Raises
+        ------
+        KeyError
+            If an agent index is missing from ``self.hparams.neighbors``.
 
-        Returns:
-            None
+        Notes
+        -----
+        - Both model parameters and buffers are aggregated via ``state_dict()``.
+        - Each agent is always included in its own aggregation set.
+        - Neighborhood structure is defined in ``self.hparams.neighbors``.
         """
-        # Convert ModuleDict → int-indexed dict
+        # Convert ModuleDict string keys to integers for consistent indexing
         agents = {int(k): v for k, v in self.agents.items()}
 
-        # Store new states (avoid in-place updates)
+        # Store new states to avoid in-place updates affecting subsequent aggregations
         new_states = {}
 
         for idx_i, agent_i in agents.items():
-            # Include self in neighborhood
+            # Include self in neighborhood for aggregation
             neigh = self.hparams.neighbors[int(idx_i)] | {int(idx_i)}
 
-            # Initialize accumulator
-            avg_state = {
-                k: torch.zeros_like(v) for k, v in agent_i.state_dict().items()
-            }
+            # Initialize accumulator with zeros matching parameter shapes
+            avg_state = {k: torch.zeros_like(v) for k, v in agent_i.state_dict().items()}
 
-            # Aggregate neighbors
+            # Accumulate parameters from all neighbors in the aggregation set
             for idx_j in neigh:
                 state_j = agents[idx_j].state_dict()
 
                 for k in avg_state:
                     avg_state[k] += state_j[k]
 
-            # Average
+            # Normalize by number of agents in the aggregation set
             for k in avg_state:
                 avg_state[k] = avg_state[k].float() / len(neigh)
 
-            # Store result (do NOT load yet)
+            # Store result (defer loading until all computations complete)
             new_states[idx_i] = avg_state
 
-        # Apply updates synchronously
+        # Apply all updates synchronously after computation completes
         for idx_i, agent in agents.items():
             agent.load_state_dict(new_states[idx_i])
-
-        return None
 
     def _shared_eval(
         self,
         batch: dict[int, list[torch.Tensor]],
         batch_idx: int,
         prefix: str,
-    ):
-        """A common step performed in the test and validation step.
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor]:
+        """Shared evaluation logic for train/val/test steps.
 
-        Args:
-            batch : dict[int, list[torch.Tensor]]
-                The current batch.
-            batch_idx : int
-                The batch index.
-            prefix : str
-                The step type for logging purposes.
+        Computes forward pass and loss for all agents, then logs metrics.
 
-        Returns:
-            (outputs, total_loss) : tuple[
-                                        dict[int, torch.Tensor],
-                                        torch.Tensor,
-                                    ]
-                The tuple with the output of the network and the epoch loss.
+        Parameters
+        ----------
+        batch : dict[int, list[torch.Tensor]]
+            Dictionary mapping agent indices to their input batches.
+            Each batch contains [anchor, positive, negative] tensors.
+        batch_idx : int
+            Index of the current batch.
+        prefix : str
+            Prefix for logging (e.g., 'train', 'val', 'test').
+
+        Returns
+        -------
+        tuple[dict[int, torch.Tensor], torch.Tensor]
+            Tuple containing:
+            - outputs: Dictionary of agent embeddings
+            - total_loss: Sum of all agent losses
         """
         outputs = self(batch)
         total_loss = 0
 
-        on_step = True if prefix == "train" else False
+        # Enable step-level logging only during training
+        on_step = prefix == 'train'
 
-        # Compute the personalized loss for each agent
+        # Compute loss for each agent independently
         for idx, agent in self.agents.items():
             batch_size = batch[int(idx)][0].size(0)
             agent_losses = agent.compute_loss(batch[int(idx)], outputs[int(idx)])
 
+            # Log individual loss components per agent
             for loss_name, loss_val in agent_losses.items():
                 self.log(
                     f'{prefix}/{loss_name}_agent_{idx}',
@@ -159,9 +223,11 @@ class FederatedCC(BaseOrchestrator):
                     prog_bar=False,
                 )
 
+            # Aggregate agent losses
             loss = sum(agent_losses.values())
             total_loss += loss
 
+        # Log total loss for monitoring
         self.log(
             f'{prefix}/total_loss',
             total_loss,
@@ -173,8 +239,29 @@ class FederatedCC(BaseOrchestrator):
 
         return outputs, total_loss
 
-    def communicate(self, idx_i: int, idx_j: int):
-        pass
+    def communicate(
+        self,
+        idx_i: int,
+        idx_j: int,
+    ) -> torch.Tensor:
+        """Communication between two agents (no-op for federated).
+
+        In this orchestrator, communication is handled via parameter
+        aggregation in ``on_train_epoch_end``, so this is a no-op.
+
+        Parameters
+        ----------
+        idx_i : int
+            Index of the first agent.
+        idx_j : int
+            Index of the second agent.
+
+        Returns
+        -------
+        torch.Tensor
+            Empty tensor (placeholder for interface compatibility).
+        """
+        return torch.tensor([])
 
 
 if __name__ == '__main__':
