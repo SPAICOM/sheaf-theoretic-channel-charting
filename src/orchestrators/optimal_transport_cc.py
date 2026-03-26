@@ -211,7 +211,7 @@ class OptimalTransportCC(BaseOrchestrator):
 
             # Perform edge alignment 
             Z_i_hat = self.transport_layers[f'{i}_{j}'][str(i)](Z_i)
-            Z_i_hat = self.transport_layers[f'{i}_{j}'][str(i)](Z_i)
+            Z_j_hat = self.transport_layers[f'{i}_{j}'][str(j)](Z_j)
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
             # Point-wise FOSCTTM
