@@ -338,9 +338,9 @@ class BaseOrchestrator(l.LightningModule, ABC):
         """
         pass
 
-    # -------------------------------
-    #     Methods for evaluation    
-    # -------------------------------
+    # -------------------------------------------------------
+    #     Methods for dimensionality reduction evaluation    
+    # -------------------------------------------------------
 
     @torch.no_grad()
     def build_test_trajectory(
@@ -453,5 +453,12 @@ class BaseOrchestrator(l.LightningModule, ABC):
         )
 
         return KS
+
+    @abstractmethod
+    @torch.no_grad()
+    def _compute_FOSCTTM(
+        self
+    ) -> None:
+        pass
 if __name__ == '__main__':
     pass
