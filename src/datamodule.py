@@ -241,7 +241,7 @@ class CSIDataModule(l.LightningDataModule):
         """
         xy = np.atleast_2d(xy)
         _, idx_local = self.kdtree.query(xy, k=1)
-        return self.valid_idxs[idx_local].astype(np.int64)
+        return idx_local.astype(np.int64)
 
     def _generate_full_coverage(self) -> np.ndarray:
         """
@@ -253,7 +253,7 @@ class CSIDataModule(l.LightningDataModule):
         Returns
         -------
         np.ndarray
-            Array of RX indices of length len(self.valid_idxs)
+            Array of RX indices of length len(self.valid_idxs_all)
             covering all feasible points exactly once.
         """
 
@@ -267,7 +267,7 @@ class CSIDataModule(l.LightningDataModule):
         current = int(self.rng.integers(0, N))
 
         for t in range(N):
-            traj[t] = self.valid_idxs[current]
+            traj[t] = current
             visited[current] = True
 
             if t == N - 1:
@@ -428,7 +428,7 @@ class CSIDataModule(l.LightningDataModule):
                 current = int(self.rng.integers(0, N))
                 traj = np.empty(T, dtype=np.int64)
                 for t in range(T):
-                    traj[t] = self.valid_idxs[current]
+                    traj[t] = current
                     current, _ = self._neighbor_step(current, heading=None)
                 return traj
 
@@ -441,7 +441,7 @@ class CSIDataModule(l.LightningDataModule):
                 heading = np.array([np.cos(ang), np.sin(ang)])
                 traj = np.empty(T, dtype=np.int64)
                 for t in range(T):
-                    traj[t] = self.valid_idxs[current]
+                    traj[t] = current
                     current, heading = self._neighbor_step(current, heading)
                 return traj
 
@@ -462,7 +462,7 @@ class CSIDataModule(l.LightningDataModule):
                 offset = 0
                 for length, heading in zip([T1, T2], headings):
                     for step in range(length):
-                        traj[offset + step] = self.valid_idxs[current]
+                        traj[offset + step] = current
                         current, heading = self._neighbor_step(current, heading)
                     offset += length
                 return traj
@@ -546,14 +546,25 @@ class CSIDataModule(l.LightningDataModule):
         local_datasets = {}
         shared_datasets = {}
 
+        # idx_to_neg_pos is {
+        #   (user_id, anchor_idx): 
+        #       {'pos': pos_idxs,
+        #       'neg': neg_idxs}
+        # }
+        # (anchor_idx, pos_idxs, neg_idxs) are all in coords w.r.t. rx_idxs
+        # rx_idxs represents the indexing of rx_pos_all_masked (positions of the union area)
+        # valid_idxs is WRONG
+        # Thus in the local datasets I'm indexing the positions and the channels based on the union of the coverage areas rx_pos_all_masked
         for base_station, _ in enumerate(self.ds):
             local_datasets[base_station] = TrajectoryCSIDataset(
                 idx_to_neg_pos=self.idx_to_neg_pos,
-                mask=self.bs_coords[base_station]['mask'],
-                rx_pos=self.bs_coords[base_station]['rx_pos'],
+                valid_idxs=self.bs_coords[base_station]['valid_idxs'],
+                # rx_pos=self.bs_coords[base_station]['rx_pos'],
+                rx_pos=self.rx_pos_all_masked,
                 channels=self.bs_coords[base_station]['channels'],
             )
 
+        # Instead in the shared datasets I'm using as global indexing the reference to rx_pos_all 
         for bs_1, bs_2 in self.edge_set:
             shared_mask = self.bs_coords[bs_1]['mask'] & self.bs_coords[bs_2]['mask']
             shared_pos = self.rx_pos_all[np.where(shared_mask)[0]]
@@ -650,23 +661,32 @@ class CSIDataModule(l.LightningDataModule):
             if self.z_max is not None:
                 mask &= self.rx_pos_all[:, 2] <= float(self.z_max)
 
-            self.bs_coords[bs_id] = {
-                'rx_pos': self.rx_pos_all[np.where(mask)[0]],
-                'mask': mask,
-                'channels': base_station.channels,
-                'coverage_radius': float(r_max),
-            }
+            self.bs_coords[bs_id] = {'rx_pos': self.rx_pos_all[np.where(mask)[0]],
+                                     'mask': mask,
+                                     'coverage_radius': float(r_max), 
+                                     'coverage_points': int(np.sum(mask)),
+                                     }
             union_mask |= mask
 
-        self.valid_idxs = np.where(union_mask)[0]
-        self.rx_pos_all_masked = self.rx_pos_all[self.valid_idxs]
-        self.rx_pos_all_masked = self.rx_pos_all_masked[:, :2]
+        self.valid_idxs_all = np.where(union_mask)[0]
+        self.rx_pos_all_masked_3d = self.rx_pos_all[self.valid_idxs_all]
+        self.rx_pos_all_masked = self.rx_pos_all_masked_3d[:, :2]
         self.kdtree = KDTree(self.rx_pos_all_masked)
 
-        # Compute feature dimensionality
-        # Each channel is complex -> we convert to real/imag pairs
-        # per_sample_complex = int(np.prod(ch.shape[1:]))
-        # self.feature_dim = 2 * per_sample_complex
+        # Valid idxs for each BS in the self.rx_pos_all
+        for bs_id, base_station in enumerate(self.ds):
+            mask = np.ones(len(self.rx_pos_all_masked), dtype=bool)
+            # ------- Filter coverage area basestation -------
+            bs_pos = base_station.bs_pos
+
+            d = np.linalg.norm(self.rx_pos_all_masked_3d - bs_pos, axis=1)
+            mask &= d <= self.bs_coords[bs_id]['coverage_radius']
+            local_valid_idxs = np.where(mask)[0]
+            self.bs_coords[bs_id]['channels'] = base_station.channels[self.valid_idxs_all]
+            self.bs_coords[bs_id]['valid_idxs'] = local_valid_idxs
+
+            assert len(local_valid_idxs) == self.bs_coords[bs_id]['coverage_points']
+
 
         # ---------------------------------------------------------------
         #                Compute dataset split sizes
@@ -699,7 +719,7 @@ class CSIDataModule(l.LightningDataModule):
             val_num_users
         )
 
-        sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs[0]])
+        sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs_all[0]])
         self.feature_dim = csi_to_realvec(sample_ch).shape[0]
 
         self._setup_done = True
