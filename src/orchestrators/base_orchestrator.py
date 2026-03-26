@@ -24,9 +24,12 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import lightning as l
+import numpy as np
+import scipy
 import torch
 import torch.nn as nn
 from scipy.spatial import KDTree
+from torch.utils.data import DataLoader
 
 
 class BaseOrchestrator(l.LightningModule, ABC):
@@ -339,18 +342,13 @@ class BaseOrchestrator(l.LightningModule, ABC):
         pass
 
     # -------------------------------------------------------
-    #     Methods for dimensionality reduction evaluation    
+    #     Methods for dimensionality reduction evaluation
     # -------------------------------------------------------
 
     @torch.no_grad()
-    def build_test_trajectory(
-        self,
-        agent_idx: int
-    ):
-        test_local_loader = Dataloader(
-            self.trainer.datamodule.test_local_dataset[agent_idx], 
-            batch_size=64, 
-            shuffle=False
+    def build_test_trajectory(self, agent_idx: int):
+        test_local_loader = DataLoader(
+            self.trainer.datamodule.test_local_dataset[agent_idx], batch_size=64, shuffle=False
         )
         agent = self.agents[agent_idx]
 
@@ -360,31 +358,31 @@ class BaseOrchestrator(l.LightningModule, ABC):
         for H, _, _, _, p in test_local_loader:
             test_embs.append(agent(H))
             pos.append(p)
-        
+
         embs = torch.cat(test_embs, dim=0)
-        pos = pos.cat(pos, dim=0)
+        pos = torch.cat(pos, dim=0)
 
         embs_KDTree = KDTree(embs)
         pos_KDTree = KDTree(pos)
 
         return embs, pos, embs_KDTree, pos_KDTree
-        
+
     def compute_continuity(
         self,
         embs: torch.tensor,
         pos: torch.tensor,
         embs_KDTree: scipy.spatial.KDTree,
         pos_KDTree: scipy.spatial.KDTree,
-        K: int, 
+        K: int,
     ) -> None:
         N = pos.shape[0]
-        F = 2 / (K * (2*N - 3*K - 1))
+        F = 2 / (K * (2 * N - 3 * K - 1))
 
         CT = np.zeros(N)
         for i in range(N):
             # Get K nearest neighbors in the original space
-            x = pos[i,:]
-            _, Ux = pos_KDTree.query(x, k = K)
+            x = pos[i, :]
+            _, Ux = pos_KDTree.query(x, k=K)
 
             # Get the corresponding of the KNN in the representation space
             Vx = embs[Ux, :]
@@ -395,7 +393,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
             # Retrieve point-wise continuity
             CT[i] = 1 - F * (r - K)
-        
+
         return torch.mean(CT)
 
     def compute_trustworthiness(
@@ -404,61 +402,52 @@ class BaseOrchestrator(l.LightningModule, ABC):
         pos: torch.tensor,
         embs_KDTree: scipy.spatial.KDTree,
         pos_KDTree: scipy.spatial.KDTree,
-        K: int, 
+        K: int,
     ) -> None:
         N = pos.shape[0]
-        F = 2 / (K * (2*N - 3*K - 1))
+        F = 2 / (K * (2 * N - 3 * K - 1))
 
         TW = np.zeros(N)
         for i in range(N):
             # Get K nearest neihbors in the representation space
-            x = embs[i,:]
-            _, Vx = embs_KDTree.query(x, k = K)
-
-            # Get the corresponding of the KNN in the original space
-            Ux = pos[Ux, :]
+            x = embs[i, :]
+            _, Vx = embs_KDTree.query(x, k=K)
 
             # Rank the corresponding of the KNN in the original space by distance
-            D = torch.linalg.norm(Ux - pos[i, :])
+            D = torch.linalg.norm(Vx - pos[i, :])
             r = torch.argsort(D)
 
             # Retrieve point-wise continuity
             TW[i] = 1 - F * (r - K)
-        
+
         return torch.mean(TW)
 
-    def compute_kruskal_stress(
-        self,
-        embs: torch.tensor,
-        pos: torch.tensor
-    ) -> None:
+    def compute_kruskal_stress(self, embs: torch.tensor, pos: torch.tensor) -> None:
         # Distance in the original space
-        DD = (pos ** 2).sum(dim=1, keepdim=True)              # (N, 1)
-        D = DD + DD.T - 2 * (pos @ pos.T)          
-        D = torch.clamp(D, min=0.0)                       
+        DD = (pos**2).sum(dim=1, keepdim=True)  # (N, 1)
+        D = DD + DD.T - 2 * (pos @ pos.T)
+        D = torch.clamp(D, min=0.0)
         D = torch.sqrt(D)
 
         # Distance in the embedding space
-        DD_hat = (embs ** 2).sum(dim=1, keepdim=True)         # (N, 1)
-        D_hat = DD_hat + DD_hat.T - 2 * (embs @ embs.T)          
-        D_hat = torch.clamp(D_hat, min=0.0)                       
+        DD_hat = (embs**2).sum(dim=1, keepdim=True)  # (N, 1)
+        D_hat = DD_hat + DD_hat.T - 2 * (embs @ embs.T)
+        D_hat = torch.clamp(D_hat, min=0.0)
         D_hat = torch.sqrt(D_hat)
 
         # Compute optimal scaling factor
-        beta = torch.sum(D * D_hat) / torch.sum(D ** 2)
+        beta = torch.sum(D * D_hat) / torch.sum(D**2)
 
-        # Compute Kruskal stress 
-        KS = torch.sqrt(
-            torch.sum((D - beta * D_hat) ** 2) / torch.sum(D ** 2)
-        )
+        # Compute Kruskal stress
+        KS = torch.sqrt(torch.sum((D - beta * D_hat) ** 2) / torch.sum(D**2))
 
         return KS
 
     @abstractmethod
     @torch.no_grad()
-    def _compute_FOSCTTM(
-        self
-    ) -> None:
+    def _compute_FOSCTTM(self) -> None:
         pass
+
+
 if __name__ == '__main__':
     pass

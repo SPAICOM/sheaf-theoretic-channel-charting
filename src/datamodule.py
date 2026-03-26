@@ -547,14 +547,15 @@ class CSIDataModule(l.LightningDataModule):
         shared_datasets = {}
 
         # idx_to_neg_pos is {
-        #   (user_id, anchor_idx): 
+        #   (user_id, anchor_idx):
         #       {'pos': pos_idxs,
         #       'neg': neg_idxs}
         # }
         # (anchor_idx, pos_idxs, neg_idxs) are all in coords w.r.t. rx_idxs
         # rx_idxs represents the indexing of rx_pos_all_masked (positions of the union area)
         # valid_idxs is WRONG
-        # Thus in the local datasets I'm indexing the positions and the channels based on the union of the coverage areas rx_pos_all_masked
+        # In local datasets I'm indexing the positions and channels based on the union of
+        # the coverage areas rx_pos_all_masked
         for base_station, _ in enumerate(self.ds):
             local_datasets[base_station] = TrajectoryCSIDataset(
                 idx_to_neg_pos=self.idx_to_neg_pos,
@@ -564,7 +565,7 @@ class CSIDataModule(l.LightningDataModule):
                 channels=self.bs_coords[base_station]['channels'],
             )
 
-        # Instead in the shared datasets I'm using as global indexing the reference to rx_pos_all 
+        # Instead in the shared datasets I'm using as global indexing the reference to rx_pos_all
         for bs_1, bs_2 in self.edge_set:
             shared_mask = self.bs_coords[bs_1]['mask'] & self.bs_coords[bs_2]['mask']
             shared_pos = self.rx_pos_all[np.where(shared_mask)[0]]
@@ -661,11 +662,12 @@ class CSIDataModule(l.LightningDataModule):
             if self.z_max is not None:
                 mask &= self.rx_pos_all[:, 2] <= float(self.z_max)
 
-            self.bs_coords[bs_id] = {'rx_pos': self.rx_pos_all[np.where(mask)[0]],
-                                     'mask': mask,
-                                     'coverage_radius': float(r_max), 
-                                     'coverage_points': int(np.sum(mask)),
-                                     }
+            self.bs_coords[bs_id] = {
+                'rx_pos': self.rx_pos_all[np.where(mask)[0]],
+                'mask': mask,
+                'coverage_radius': float(r_max),
+                'coverage_points': int(np.sum(mask)),
+            }
             union_mask |= mask
 
         self.valid_idxs_all = np.where(union_mask)[0]
@@ -686,7 +688,6 @@ class CSIDataModule(l.LightningDataModule):
             self.bs_coords[bs_id]['valid_idxs'] = local_valid_idxs
 
             assert len(local_valid_idxs) == self.bs_coords[bs_id]['coverage_points']
-
 
         # ---------------------------------------------------------------
         #                Compute dataset split sizes

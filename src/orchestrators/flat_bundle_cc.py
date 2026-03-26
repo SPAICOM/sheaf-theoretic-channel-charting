@@ -103,8 +103,8 @@ class FlatBundleCC(BaseOrchestrator):
                     continue
                 neighbor_str = edge[1] if edge[0] == agent_str else edge[0]
 
-                Z_a = shared_embeddings[edge][agent_str]                            # (N, d)
-                Z_n = shared_embeddings[edge][neighbor_str]                         # (N, d)
+                Z_a = shared_embeddings[edge][agent_str]  # (N, d)
+                Z_n = shared_embeddings[edge][neighbor_str]  # (N, d)
                 R_n = self.local_reference_frames[neighbor_str].to(self.device)
 
                 # Aggregate cross-covariance
@@ -203,14 +203,11 @@ class FlatBundleCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def _compute_FOSCTTM(
-        self
-    ):
+    def _compute_FOSCTTM(self):
         test_shared_dataset = self.trainer.datamodule.test_shared_dataset
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
-        for i, dataset in enumerate(train_shared_dataset.values()):
-        
+        for i, dataset in enumerate(test_shared_dataset.values()):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
@@ -227,7 +224,7 @@ class FlatBundleCC(BaseOrchestrator):
             Z_i = torch.cat(embs_1, dim=0)
             Z_j = torch.cat(embs_2, dim=0)
 
-            # Perform edge alignment 
+            # Perform edge alignment
             Z_i_hat = Z_i @ self.local_reference_frames[edge[0]].T
             Z_j_hat = Z_j @ self.local_reference_frames[edge[1]].T
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
@@ -240,10 +237,9 @@ class FlatBundleCC(BaseOrchestrator):
                 Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat)
 
                 edge_FOSCTTM[p] = 0.5 * (
-                    torch.sum(Ds_1 < d) / Z_j_hat.shape[0] + 
-                    torch.sum(Ds_2 < d) / Z_j_hat.shape[0]
+                    torch.sum(Ds_1 < d) / Z_j_hat.shape[0] + torch.sum(Ds_2 < d) / Z_j_hat.shape[0]
                 )
-                
+
             FOSCTTM[i] = torch.mean(edge_FOSCTTM)
 
         return torch.mean(FOSCTTM)

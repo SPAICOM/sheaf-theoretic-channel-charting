@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 
 from src.orchestrators.base_orchestrator import BaseOrchestrator
 
@@ -185,18 +186,16 @@ class OptimalTransportCC(BaseOrchestrator):
         )
 
         return private_outputs, total_loss
-    def _compute_FOSCTTM(
-        self
-    ):
+
+    def _compute_FOSCTTM(self):
         test_shared_dataset = self.trainer.datamodule.test_shared_dataset
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
-        for i, dataset in enumerate(train_shared_dataset.values()):
-        
+        for i, dataset in enumerate(test_shared_dataset.values()):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
-            edge = tuple(sorted((bs1_str, bs2_str)))
+            tuple(sorted((bs1_str, bs2_str)))
 
             # Accumulate embeddings over the full shared dataset
             embs_1, embs_2 = [], []
@@ -209,7 +208,8 @@ class OptimalTransportCC(BaseOrchestrator):
             Z_i = torch.cat(embs_1, dim=0)
             Z_j = torch.cat(embs_2, dim=0)
 
-            # Perform edge alignment 
+            # Perform edge alignment
+            j = bs2_str
             Z_i_hat = self.transport_layers[f'{i}_{j}'][str(i)](Z_i)
             Z_j_hat = self.transport_layers[f'{i}_{j}'][str(j)](Z_j)
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
@@ -222,10 +222,9 @@ class OptimalTransportCC(BaseOrchestrator):
                 Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat)
 
                 edge_FOSCTTM[p] = 0.5 * (
-                    torch.sum(Ds_1 < d) / Z_j_hat.shape[0] + 
-                    torch.sum(Ds_2 < d) / Z_j_hat.shape[0]
+                    torch.sum(Ds_1 < d) / Z_j_hat.shape[0] + torch.sum(Ds_2 < d) / Z_j_hat.shape[0]
                 )
-                
+
             FOSCTTM[i] = torch.mean(edge_FOSCTTM)
 
         return torch.mean(FOSCTTM)

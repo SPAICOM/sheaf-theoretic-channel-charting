@@ -188,14 +188,11 @@ class DiagSheafCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def _compute_FOSCTTM(
-        self
-    ):
+    def _compute_FOSCTTM(self):
         test_shared_dataset = self.trainer.datamodule.test_shared_dataset
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
-        for i, dataset in enumerate(train_shared_dataset.values()):
-        
+        for i, dataset in enumerate(test_shared_dataset.values()):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
@@ -212,7 +209,7 @@ class DiagSheafCC(BaseOrchestrator):
             Z_i = torch.cat(embs_1, dim=0)
             Z_j = torch.cat(embs_2, dim=0)
 
-            # Perform edge alignment 
+            # Perform edge alignment
             Z_j_hat = Z_j @ self.diagonal_maps[edge]
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
@@ -222,7 +219,7 @@ class DiagSheafCC(BaseOrchestrator):
                 Ds = torch.linalg.norm(Z_j_hat[p, :] - Z_i)
 
                 edge_FOSCTTM[p] = torch.sum(Ds < d) / Z_j_hat.shape[0]
-                
+
             FOSCTTM[i] = torch.mean(edge_FOSCTTM)
 
         return torch.mean(FOSCTTM)
