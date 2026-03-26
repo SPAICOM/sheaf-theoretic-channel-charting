@@ -203,8 +203,50 @@ class FlatBundleCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def communicate(self):
-        pass
+    def _compute_FOSCTTM(
+        self
+    ):
+        test_shared_dataset = self.trainer.datamodule.test_shared_dataset
+        FOSCTTM = torch.zeros(len(self.hparams['edges']))
+
+        for i, dataset in enumerate(train_shared_dataset.values()):
+        
+            loader = DataLoader(dataset, batch_size=64, shuffle=False)
+            bs1_str = str(dataset.idx_bs_1)
+            bs2_str = str(dataset.idx_bs_2)
+            edge = tuple(sorted((bs1_str, bs2_str)))
+
+            # Accumulate embeddings over the full shared dataset
+            embs_1, embs_2 = [], []
+            for H_1, H_2, _ in loader:
+                H_1, H_2 = H_1.to(self.device), H_2.to(self.device)
+                embs_1.append(self.agents[bs1_str](H_1, triplet_mode=False))
+                embs_2.append(self.agents[bs2_str](H_2, triplet_mode=False))
+
+            # Stack all embeddings: (N, d)
+            Z_i = torch.cat(embs_1, dim=0)
+            Z_j = torch.cat(embs_2, dim=0)
+
+            # Perform edge alignment 
+            Z_i_hat = Z_i @ self.local_reference_frames[edge[0]].T
+            Z_j_hat = Z_j @ self.local_reference_frames[edge[1]].T
+            edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
+
+            # Point-wise FOSCTTM
+            for p in range(Z_j_hat.shape[0]):
+                d = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat[p, :])
+
+                Ds_1 = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat)
+                Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat)
+
+                edge_FOSCTTM[p] = 0.5 * (
+                    torch.sum(Ds_1 < d) / Z_j_hat.shape[0] + 
+                    torch.sum(Ds_2 < d) / Z_j_hat.shape[0]
+                )
+                
+            FOSCTTM[i] = torch.mean(edge_FOSCTTM)
+
+        return torch.mean(FOSCTTM)
 
 
 if __name__ == '__main__':
