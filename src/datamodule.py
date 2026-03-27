@@ -757,7 +757,7 @@ class CSIDataModule(l.LightningDataModule):
             loaders[base_station] = DataLoader(
                 self.train_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
-                shuffle=True,
+                shuffle=False,
                 drop_last=True,
             )
 
@@ -765,7 +765,7 @@ class CSIDataModule(l.LightningDataModule):
             loaders[(bs_1, bs_2)] = DataLoader(
                 self.train_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
-                shuffle=True,
+                shuffle=False,
                 drop_last=True,
             )
 
