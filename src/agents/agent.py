@@ -105,10 +105,10 @@ class Encoder(nn.Module):
             BS, P, _ = x.shape
             x = x.reshape(BS * P, -1)
 
-        # Apply activation + BatchNorm + Dropout to all layers except the last
+        # Apply BatchNorm + activation + Dropout to all layers except the last
         for i in range(self.num_hidden_layers - 1):
-            x = self.act(self.linear_layers[i](x))
-            x = self.norm_layers[i](x)
+            x = self.norm_layers[i](self.linear_layers[i](x))
+            x = self.act(x)
             x = self.dropout_layers[i](x)
 
         # Final linear projection (no activation)
@@ -210,10 +210,10 @@ class Decoder(nn.Module):
             BS, P, _ = x.shape
             x = x.reshape(BS * P, -1)
 
-        # Apply activation + BatchNorm + Dropout to all layers except the last
+        # Apply BatchNorm + activation + Dropout to all layers except the last
         for i in range(self.num_hidden_layers - 1):
-            x = self.act(self.layers[i](x))
-            x = self.norm_layers[i](x)
+            x = self.norm_layers[i](self.layers[i](x))
+            x = self.act(x)
             x = self.dropout_layers[i](x)
 
         if shape_3d:
@@ -283,7 +283,9 @@ class Agent(nn.Module):
         super().__init__()
 
         # Validate configuration
-        assert distance_mode in {'euclidean', 'cosine'}, 'Provide a valid distance mode'
+        assert distance_mode in {'euclidean', 'euclidean2', 'cosine'}, (
+            'Provide a valid distance mode'
+        )
         assert loss_mode in {'contrastive', 'triplet'}, 'Provide a valid layer mode'
 
         self.use_decoder = use_decoder

@@ -18,6 +18,7 @@ class DistanceLayer(nn.Module):
     def __init__(
         self,
         distance_mode: str,
+        epsilon: float = 1e-8,
     ) -> None:
         """
         Initialize the distance layer.
@@ -25,12 +26,17 @@ class DistanceLayer(nn.Module):
         Parameters
         ----------
         distance_mode : str
-            Distance metric: 'euclidean' or 'cosine'.
+            Distance metric: 'euclidean', 'euclidean2', or 'cosine'.
+        epsilon : float
+            Small constant for numerical stability.
         """
         super().__init__()
-        assert distance_mode in {'euclidean', 'cosine'}, 'Provide a valid distance mode'
+        assert distance_mode in {'euclidean', 'euclidean2', 'cosine'}, (
+            'Provide a valid distance mode'
+        )
 
         self.distance_mode = distance_mode
+        self.epsilon = epsilon
 
     def forward(
         self,
@@ -56,6 +62,13 @@ class DistanceLayer(nn.Module):
                 z1 = z1.unsqueeze(1)  # (B, 1, D)
 
                 # Distance computation (batching + broadcasting)
+                dist = (z1 - z2).pow(2).sum(dim=-1).add(self.epsilon).sqrt()  # (B, K)
+
+            case 'euclidean2':
+                # Anchor expansion
+                z1 = z1.unsqueeze(1)  # (B, 1, D)
+
+                # Squared euclidean distance
                 dist = (z1 - z2).pow(2).sum(dim=-1)  # (B, K)
 
             case 'cosine':
@@ -74,7 +87,7 @@ class DistanceLayer(nn.Module):
 
             case _:
                 dist = None
-        
+
         return dist
 
 
@@ -88,6 +101,7 @@ class LossLayer(nn.Module):
         loss_mode: str,
         distance_mode: str,
         margin: float = 1.0,
+        epsilon: float = 1e-8,
     ) -> None:
         """
         Initialize the loss layer.
@@ -97,17 +111,21 @@ class LossLayer(nn.Module):
         loss_mode : str
             'contrastive' or 'triplet'.
         distance_mode : str
-            'euclidean' or 'cosine'.
+            'euclidean', 'euclidean2', or 'cosine'.
         margin : float
             Margin for contrastive/triplet loss.
+        epsilon : float
+            Small constant for numerical stability.
         """
         super().__init__()
         assert loss_mode in {'contrastive', 'triplet'}, 'Provide a valid layer mode'
-        assert distance_mode in {'euclidean', 'cosine'}, 'Provide a valid distance mode'
+        assert distance_mode in {'euclidean', 'euclidean2', 'cosine'}, (
+            'Provide a valid distance mode'
+        )
 
         self.margin = margin
         self.loss_mode = loss_mode
-        self.dist_layer = DistanceLayer(distance_mode=distance_mode)
+        self.dist_layer = DistanceLayer(distance_mode=distance_mode, epsilon=epsilon)
 
     def forward(
         self,
@@ -173,6 +191,7 @@ class SiameseLayer(nn.Module):
         loss_mode: str,
         distance_mode: str,
         margin: float,
+        epsilon: float = 1e-8,
     ) -> None:
         """
         Initialize the Siamese loss layer.
@@ -182,23 +201,29 @@ class SiameseLayer(nn.Module):
         loss_mode : str
             'contrastive' or 'triplet'.
         distance_mode : str
-            'euclidean' or 'cosine'.
+            'euclidean', 'euclidean2', or 'cosine'.
         margin : float
             Margin for loss computation.
+        epsilon : float
+            Small constant for numerical stability.
         """
         super().__init__()
         assert loss_mode in ['contrastive', 'triplet'], 'Provide a valid layer mode'
-        assert distance_mode in ['euclidean', 'cosine'], 'Provide a valid distance mode'
+        assert distance_mode in ['euclidean', 'euclidean2', 'cosine'], (
+            'Provide a valid distance mode'
+        )
 
         self.loss_mode = loss_mode
         self.distance_mode = distance_mode
         self.margin = margin
+        self.epsilon = epsilon
 
         # Build the underlying LossLayer
         self.loss_func = LossLayer(
             margin=margin,
             loss_mode=loss_mode,
             distance_mode=distance_mode,
+            epsilon=epsilon,
         )
 
     def forward(

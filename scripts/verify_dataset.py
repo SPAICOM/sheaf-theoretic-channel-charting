@@ -44,12 +44,13 @@ import argparse
 import sys
 
 import matplotlib
+
 matplotlib.use('Agg')  # headless backend — works with and without a display
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
 import numpy as np
 import omegaconf
 import torch
+from matplotlib.patches import Circle
 
 # ── project root on path ──────────────────────────────────────────────────────
 sys.path.insert(0, '.')
@@ -57,8 +58,8 @@ sys.path.insert(0, '.')
 from src.datamodule import CSIDataModule
 from src.dataset import TrajectoryCSIDataset, csi_to_realvec
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _ok(label: str) -> None:
     print(f'  [PASS] {label}')
@@ -85,14 +86,15 @@ def _check_allclose(
 
 # ── verification routines ─────────────────────────────────────────────────────
 
+
 def check_position_mapping(dm: CSIDataModule, gidxs: np.ndarray) -> int:
     """Check 1: rx_pos_all_masked[gidx] == rx_pos_all[valid_idxs_all[gidx]][:2]"""
     print('\n── Check 1: position mapping ───────────────────────────────────────')
     failures = 0
     for gidx in gidxs:
         orig_idx = dm.valid_idxs_all[gidx]
-        from_masked = dm.rx_pos_all_masked[gidx]          # shape (2,)
-        from_original = dm.rx_pos_all[orig_idx, :2]       # shape (2,)
+        from_masked = dm.rx_pos_all_masked[gidx]  # shape (2,)
+        from_original = dm.rx_pos_all[orig_idx, :2]  # shape (2,)
         label = f'gidx={gidx}  orig_idx={orig_idx}'
         if not _check_allclose(label, from_masked, from_original):
             failures += 1
@@ -104,8 +106,8 @@ def check_channel_mapping(dm: CSIDataModule, bs_id: int, gidxs: np.ndarray) -> i
     """Check 2: bs_coords[bs_id]['channels'][gidx] == ds[bs_id].channels[valid_idxs_all[gidx]]"""
     print(f'\n── Check 2: channel mapping  (BS {bs_id}) ──────────────────────────')
     failures = 0
-    bs_channels_masked = dm.bs_coords[bs_id]['channels']   # shape (N_masked, R, T, F)
-    original_channels = dm.ds[bs_id].channels              # shape (N_full, R, T, F)
+    bs_channels_masked = dm.bs_coords[bs_id]['channels']  # shape (N_masked, R, T, F)
+    original_channels = dm.ds[bs_id].channels  # shape (N_full, R, T, F)
     for gidx in gidxs:
         orig_idx = dm.valid_idxs_all[gidx]
         from_masked = bs_channels_masked[gidx]
@@ -197,9 +199,9 @@ def check_spatial_ordering(
     entries = _sample_triplet_entries(dm, bs_id, n_samples, rng)
     failures = 0
     for e in entries:
-        anchor_pos = dm.rx_pos_all_masked[e['anchor']]          # (2,)
-        pos_pos    = dm.rx_pos_all_masked[e['pos']]             # (n_pos, 2)
-        neg_pos    = dm.rx_pos_all_masked[e['neg']]             # (n_neg, 2)
+        anchor_pos = dm.rx_pos_all_masked[e['anchor']]  # (2,)
+        pos_pos = dm.rx_pos_all_masked[e['pos']]  # (n_pos, 2)
+        neg_pos = dm.rx_pos_all_masked[e['neg']]  # (n_neg, 2)
 
         mean_pos_dist = float(np.mean(np.linalg.norm(pos_pos - anchor_pos, axis=1)))
         mean_neg_dist = float(np.mean(np.linalg.norm(neg_pos - anchor_pos, axis=1)))
@@ -346,6 +348,7 @@ def check_shared_dataset_consistency(
 
 # ── triplet visualisation ─────────────────────────────────────────────────────
 
+
 def plot_triplet_batch(
     dm: CSIDataModule,
     bs_id: int,
@@ -374,14 +377,14 @@ def plot_triplet_batch(
         If given, save the figure to this path instead of showing it.
     """
     ds_local = dm.train_local_dataset[bs_id]
-    rx_pos = dm.rx_pos_all_masked          # (N_masked, 2)
+    rx_pos = dm.rx_pos_all_masked  # (N_masked, 2)
 
-    bs_xy = dm.ds[bs_id].bs_pos.squeeze()[:2]          # (2,)
+    bs_xy = dm.ds[bs_id].bs_pos.squeeze()[:2]  # (2,)
     coverage_radius = dm.bs_coords[bs_id]['coverage_radius']
 
     # Group all gidxs by user so we can draw full trajectories
     user_to_gidxs: dict[int, list[int]] = {}
-    for (uid, gidx) in ds_local.idx_to_neg_pos:
+    for uid, gidx in ds_local.idx_to_neg_pos:
         user_to_gidxs.setdefault(uid, []).append(gidx)
 
     keys = list(ds_local.idx_to_neg_pos.keys())
@@ -399,29 +402,51 @@ def plot_triplet_batch(
 
         # Full trajectory for this user — preserve insertion order (= temporal order)
         traj_gidxs = user_to_gidxs[uid]
-        traj_xy = rx_pos[traj_gidxs]         # (T, 2)
+        traj_xy = rx_pos[traj_gidxs]  # (T, 2)
 
-        anchor_xy = rx_pos[anchor_gidx]       # (2,)
-        pos_xy    = rx_pos[pos_gidxs]         # (n_pos, 2)
-        neg_xy    = rx_pos[neg_gidxs]         # (n_neg, 2)
+        anchor_xy = rx_pos[anchor_gidx]  # (2,)
+        pos_xy = rx_pos[pos_gidxs]  # (n_pos, 2)
+        neg_xy = rx_pos[neg_gidxs]  # (n_neg, 2)
 
         # Trajectory line
-        ax.plot(traj_xy[:, 0], traj_xy[:, 1],
-                color='lightgrey', linewidth=1.0, zorder=1, label='trajectory')
+        ax.plot(
+            traj_xy[:, 0],
+            traj_xy[:, 1],
+            color='lightgrey',
+            linewidth=1.0,
+            zorder=1,
+            label='trajectory',
+        )
 
         # Negative samples
-        ax.scatter(neg_xy[:, 0], neg_xy[:, 1],
-                   c='red', marker='x', s=50, linewidths=1.5,
-                   zorder=3, label=f'negatives ({len(neg_gidxs)})')
+        ax.scatter(
+            neg_xy[:, 0],
+            neg_xy[:, 1],
+            c='red',
+            marker='x',
+            s=50,
+            linewidths=1.5,
+            zorder=3,
+            label=f'negatives ({len(neg_gidxs)})',
+        )
 
         # Positive samples
-        ax.scatter(pos_xy[:, 0], pos_xy[:, 1],
-                   c='limegreen', marker='o', s=40, edgecolors='darkgreen',
-                   linewidths=0.8, zorder=4, label=f'positives ({len(pos_gidxs)})')
+        ax.scatter(
+            pos_xy[:, 0],
+            pos_xy[:, 1],
+            c='limegreen',
+            marker='o',
+            s=40,
+            edgecolors='darkgreen',
+            linewidths=0.8,
+            zorder=4,
+            label=f'positives ({len(pos_gidxs)})',
+        )
 
         # Anchor
-        ax.scatter([anchor_xy[0]], [anchor_xy[1]],
-                   c='black', marker='*', s=200, zorder=5, label='anchor')
+        ax.scatter(
+            [anchor_xy[0]], [anchor_xy[1]], c='black', marker='*', s=200, zorder=5, label='anchor'
+        )
 
         ax.set_title(f'BS {bs_id}  |  user {uid}  |  gidx {anchor_gidx}', fontsize=9)
         ax.set_xlabel('x (m)', fontsize=8)
@@ -436,14 +461,28 @@ def plot_triplet_batch(
         ylim = ax.get_ylim()
 
         # BS position and coverage area — clipped to current view
-        ax.scatter([bs_xy[0]], [bs_xy[1]],
-                   c='royalblue', marker='^', s=120, zorder=6, label=f'BS {bs_id}',
-                   clip_on=True)
-        ax.add_patch(Circle(
-            (bs_xy[0], bs_xy[1]), coverage_radius,
-            facecolor='royalblue', alpha=0.06, edgecolor='royalblue',
-            linewidth=0.8, zorder=0, clip_on=True,
-        ))
+        ax.scatter(
+            [bs_xy[0]],
+            [bs_xy[1]],
+            c='royalblue',
+            marker='^',
+            s=120,
+            zorder=6,
+            label=f'BS {bs_id}',
+            clip_on=True,
+        )
+        ax.add_patch(
+            Circle(
+                (bs_xy[0], bs_xy[1]),
+                coverage_radius,
+                facecolor='royalblue',
+                alpha=0.06,
+                edgecolor='royalblue',
+                linewidth=0.8,
+                zorder=0,
+                clip_on=True,
+            )
+        )
 
         # Restore data-driven limits so the circle doesn't rescale the axes
         ax.set_xlim(xlim)
@@ -467,48 +506,55 @@ def plot_triplet_batch(
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Verify CSI / position index consistency')
-    parser.add_argument('--n-samples', type=int, default=20,
-                        help='Number of random indices to probe (default: 20)')
-    parser.add_argument('--bs-id', type=int, default=0,
-                        help='Base-station index to verify (default: 0)')
-    parser.add_argument('--seed', type=int, default=0,
-                        help='Random seed (default: 0)')
-    parser.add_argument('--plot', action='store_true',
-                        help='Generate triplet visualisation plot')
-    parser.add_argument('--plot-output', type=str, default=None,
-                        help='Save plot to this path instead of showing it (e.g. triplets.png)')
+    parser.add_argument(
+        '--n-samples', type=int, default=20, help='Number of random indices to probe (default: 20)'
+    )
+    parser.add_argument(
+        '--bs-id', type=int, default=0, help='Base-station index to verify (default: 0)'
+    )
+    parser.add_argument('--seed', type=int, default=0, help='Random seed (default: 0)')
+    parser.add_argument('--plot', action='store_true', help='Generate triplet visualisation plot')
+    parser.add_argument(
+        '--plot-output',
+        type=str,
+        default=None,
+        help='Save plot to this path instead of showing it (e.g. triplets.png)',
+    )
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
 
     # ── minimal datamodule config ─────────────────────────────────────────────
-    cfg = omegaconf.OmegaConf.create({
-        'scenario': 'city_3_houston_3p5',
-        'download': True,
-        'batch_size': 4,
-        'num_workers': 0,
-        'pin_memory': False,
-        'train_num_users': 50,
-        'test_num_users': 1,
-        'val_num_users': 1,
-        'T_min': 1000,
-        'T_max': 1001,
-        'coverage_area': 0.6,
-        'trajectory_kind': 'neighbor_linear',
-        'pair_mode': 'triplet',
-        'in_window': 5,
-        'out_window': 10,
-        'bias_sampling': False,
-        'n_pos': None,
-        'n_neg': None,
-        'compute_channels': {
-            'max_subcarriers': 16,
-            'ue_antenna': {'shape': [1, 1]},
-        },
-        'edge_set': [[0, 1], [0, 2], [1, 2]],
-    })
+    cfg = omegaconf.OmegaConf.create(
+        {
+            'scenario': 'city_3_houston_3p5',
+            'download': True,
+            'batch_size': 4,
+            'num_workers': 0,
+            'pin_memory': False,
+            'train_num_users': 50,
+            'test_num_users': 1,
+            'val_num_users': 1,
+            'T_min': 1000,
+            'T_max': 1001,
+            'coverage_area': 0.6,
+            'trajectory_kind': 'neighbor_linear',
+            'pair_mode': 'triplet',
+            'in_window': 5,
+            'out_window': 10,
+            'bias_sampling': False,
+            'n_pos': None,
+            'n_neg': None,
+            'compute_channels': {
+                'max_subcarriers': 16,
+                'ue_antenna': {'shape': [1, 1]},
+            },
+            'edge_set': [[0, 1], [0, 2], [1, 2]],
+        }
+    )
 
     print('Setting up CSIDataModule …')
     dm = CSIDataModule(dataset_cfg=cfg, seed=args.seed)

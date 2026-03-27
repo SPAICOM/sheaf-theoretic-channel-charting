@@ -1,7 +1,7 @@
 _target_: src.Agent
 
 use_decoder: false
-distance_mode: euclidean
+distance_mode: euclidean2
 loss_mode: triplet
 out_dim: 2
 num_hidden_layers: 6

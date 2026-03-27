@@ -568,9 +568,7 @@ class CSIDataModule(l.LightningDataModule):
         # Shared datasets: only trajectory anchor points visible to both BSes.
         # anchor_rx values in idx_to_neg_pos are indices into rx_pos_all_masked,
         # matching the indexing of bs_coords[bs_id]['valid_idxs'] and ['channels'].
-        all_traj_idxs = np.unique(
-            [anchor_rx for (_, anchor_rx) in self.idx_to_neg_pos.keys()]
-        )
+        all_traj_idxs = np.unique([anchor_rx for (_, anchor_rx) in self.idx_to_neg_pos])
 
         for bs_1, bs_2 in self.edge_set:
             bs1_valid = set(self.bs_coords[bs_1]['valid_idxs'].tolist())

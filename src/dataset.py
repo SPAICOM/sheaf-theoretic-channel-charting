@@ -264,12 +264,8 @@ class TrajectoryCSIDataset(Dataset):
             case 'contrastive':
                 # sample positive pair with prob p_positive else negative pair
                 xA = csi_to_realvec(H_A)
-                xP = torch.vstack(
-                    [csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs]
-                )
-                xN = torch.vstack(
-                    [csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs]
-                )
+                xP = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs])
+                xN = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs])
                 y = torch.tensor(
                     1 if self.rng.random() < self.p_positive else 0,
                     dtype=torch.long,

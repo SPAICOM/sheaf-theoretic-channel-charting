@@ -419,15 +419,18 @@ class BaseOrchestrator(l.LightningModule, ABC):
         pass
 
     def eval_all(self, K_max: int, K_min: int = 2, step: int = 1):
-
         # Results
         res = {'KS': [], 'CT': defaultdict(list), 'TW': defaultdict(list)}
         for agent in self.agents:
             embs, pos, embs_KDTree, pos_KDTree = self.build_test_trajectory(agent_idx=agent)
             res['KS'].append(self.compute_kruskal_stress(embs=embs, pos=pos))
             for K in range(K_min, K_max + 1, step):
-                res['CT'][K].append(self.compute_continuity(embs=embs, pos=pos, pos_KDTree=pos_KDTree, K=K))
-                res['TW'][K].append(self.compute_trustworthiness(embs=embs, pos=pos, embs_KDTree=embs_KDTree, K=K))
+                res['CT'][K].append(
+                    self.compute_continuity(embs=embs, pos=pos, pos_KDTree=pos_KDTree, K=K)
+                )
+                res['TW'][K].append(
+                    self.compute_trustworthiness(embs=embs, pos=pos, embs_KDTree=embs_KDTree, K=K)
+                )
         res['FOSCTTM'] = self._compute_FOSCTTM()
 
         # Logging
@@ -442,7 +445,6 @@ class BaseOrchestrator(l.LightningModule, ABC):
         self.logger.experiment.log(wandb_log)
 
         return res
-
 
 
 if __name__ == '__main__':

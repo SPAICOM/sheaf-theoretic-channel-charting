@@ -7,10 +7,13 @@ parameter sharing between base stations.
 
 from __future__ import annotations
 
-import torch
-import torch.nn as nn
+from typing import TYPE_CHECKING
 
 from src.orchestrators.base_orchestrator import BaseOrchestrator
+
+if TYPE_CHECKING:
+    import torch
+    import torch.nn as nn
 
 
 class VanillaCC(BaseOrchestrator):
@@ -144,6 +147,7 @@ class VanillaCC(BaseOrchestrator):
 
     def _compute_FOSCTTM(self) -> None:
         pass
+
 
 if __name__ == '__main__':
     pass
