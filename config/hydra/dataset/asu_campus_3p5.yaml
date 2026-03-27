@@ -5,7 +5,9 @@ batch_size: 16
 num_workers: 0
 pin_memory: true
 
-num_users: 100
+train_num_users: 100
+val_num_users: 100
+test_num_users: 100
 T_min: 20
 T_max: 60
 window: 500

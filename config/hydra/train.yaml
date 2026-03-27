@@ -6,7 +6,7 @@ defaults:
 
 logger:
   _target_: lightning.pytorch.loggers.WandbLogger
-  project: sheaf_cc
+  project: sheaf_cc_mega_sim
   name: ${hydra:runtime.choices.orchestrator}_${now:%Y-%m-%d}_${now:%H-%M-%S}
   save_dir: checkpoints
   log_model: false
@@ -14,34 +14,39 @@ logger:
 seed: 80
 
 trainer:
-  max_epochs: 0
+  max_epochs: 20
   accelerator: auto
   devices: 1
-
   deterministic: true
   num_sanity_val_steps: 2
-  log_every_n_steps: 50
+  log_every_n_steps: 10
 
 callbacks:
-  lr_monitor:
-    _target_: lightning.pytorch.callbacks.LearningRateMonitor
-    logging_interval: step
+  # lr_monitor:
+  #   _target_: lightning.pytorch.callbacks.LearningRateMonitor
+  #   logging_interval: step
 
-  checkpoint:
-    _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    monitor: val/total_loss
-    mode: min
-    save_top_k: 1
-    save_last: true
+  # checkpoint:
+  #   _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  #   monitor: val/total_loss
+  #   mode: min
+  #   save_top_k: 1
+  #   save_last: true
 
-  early_stopping:
-    _target_: lightning.pytorch.callbacks.EarlyStopping
-    monitor: val/total_loss
-    patience: 5
-    mode: min
+  # early_stopping:
+  #   _target_: lightning.pytorch.callbacks.EarlyStopping
+  #   monitor: val/total_loss
+  #   patience: 5
+  #   mode: min
 
   # batch_size_finder:
   #   _target_: lightning.pytorch.callbacks.BatchSizeFinder
   #   mode: power
   #   init_val: 32
   #   max_trials: 5
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      model.use_decoder: false

@@ -296,13 +296,13 @@ class BundleCC(BaseOrchestrator):
             Z_j = torch.cat(embs_2, dim=0)
 
             # Perform edge alignment
-            Z_j_hat = Z_j @ self.orthogonal_maps[edge]
+            Z_j_hat = Z_j @ self.orthogonal_maps[edge].to(self.device)
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
             # Point-wise FOSCTTM
             for p in range(Z_j_hat.shape[0]):
                 d = torch.linalg.norm(Z_j_hat[p, :] - Z_i[p, :])
-                Ds = torch.linalg.norm(Z_j_hat[p, :] - Z_i)
+                Ds = torch.linalg.norm(Z_j_hat[p, :] - Z_i, dim=1)
 
                 edge_FOSCTTM[p] = torch.sum(Ds < d) / Z_j_hat.shape[0]
 

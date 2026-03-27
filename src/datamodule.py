@@ -274,7 +274,7 @@ class CSIDataModule(l.LightningDataModule):
                 break
 
             # query several nearest neighbors
-            dists, neigh = self.kdtree.query(coords[current], k=20)
+            _, neigh = self.kdtree.query(coords[current], k=20)
 
             # filter unvisited
             candidates = [n for n in neigh if not visited[n]]
@@ -565,20 +565,36 @@ class CSIDataModule(l.LightningDataModule):
                 channels=self.bs_coords[base_station]['channels'],
             )
 
-        # Instead in the shared datasets I'm using as global indexing the reference to rx_pos_all
+        # Shared datasets: only trajectory anchor points visible to both BSes.
+        # anchor_rx values in idx_to_neg_pos are indices into rx_pos_all_masked,
+        # matching the indexing of bs_coords[bs_id]['valid_idxs'] and ['channels'].
+        all_traj_idxs = np.unique(
+            [anchor_rx for (_, anchor_rx) in self.idx_to_neg_pos.keys()]
+        )
+
         for bs_1, bs_2 in self.edge_set:
-            shared_mask = self.bs_coords[bs_1]['mask'] & self.bs_coords[bs_2]['mask']
-            shared_pos = self.rx_pos_all[np.where(shared_mask)[0]]
-            channels_bs_1 = self.ds[bs_1].channels[shared_mask]
-            channels_bs_2 = self.ds[bs_2].channels[shared_mask]
+            bs1_valid = set(self.bs_coords[bs_1]['valid_idxs'].tolist())
+            bs2_valid = set(self.bs_coords[bs_2]['valid_idxs'].tolist())
+
+            shared_traj_idxs = np.array(
+                [idx for idx in all_traj_idxs if idx in bs1_valid and idx in bs2_valid],
+                dtype=np.int64,
+            )
+
+            if len(shared_traj_idxs) == 0:
+                continue
+
+            shared_pos = self.rx_pos_all_masked_3d[shared_traj_idxs]
+            channels_bs_1 = self.bs_coords[bs_1]['channels'][shared_traj_idxs]
+            channels_bs_2 = self.bs_coords[bs_2]['channels'][shared_traj_idxs]
 
             shared_datasets[(bs_1, bs_2)] = SharedTrajectoryCSIDataset(
                 idx_bs_1=bs_1,
                 idx_bs_2=bs_2,
-                shared_mask=shared_mask,
                 shared_pos=shared_pos,
                 channels_bs_1=channels_bs_1,
                 channels_bs_2=channels_bs_2,
+                shared_traj_idxs=shared_traj_idxs,
             )
 
         return local_datasets, shared_datasets, self.idx_to_neg_pos.copy()
@@ -693,9 +709,9 @@ class CSIDataModule(l.LightningDataModule):
         #                Compute dataset split sizes
         # ---------------------------------------------------------------
 
-        train_num_users = int(int(self.cfg['train_num_users']))
-        test_num_users = int(int(self.cfg['test_num_users']))
-        val_num_users = int(int(self.cfg['val_num_users']))
+        train_num_users = int(self.cfg['train_num_users'])
+        test_num_users = int(self.cfg['test_num_users'])
+        val_num_users = int(self.cfg['val_num_users'])
 
         # ---------------------------------------------------------------
         #                   Create the Datasets

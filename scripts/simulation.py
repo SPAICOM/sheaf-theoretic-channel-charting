@@ -44,13 +44,17 @@ def main(cfg: DictConfig) -> None:
 
     # Log full Hydra config to WandB
     if logger is not None:
-        logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True))
+        logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True), allow_val_change=True)
 
     # ===================================================
     #             Define the Trainer
     # ===================================================
     # Instantiate callbacks
-    callbacks = [instantiate(cb_conf) for cb_conf in cfg.callbacks.values()]
+    if cfg.callbacks is None:
+        callbacks = []
+    else:
+        callbacks = [instantiate(cb_conf) for cb_conf in cfg.callbacks.values()]
+        
 
     # Instantiate Trainer
     trainer = Trainer(

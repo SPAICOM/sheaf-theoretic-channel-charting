@@ -210,7 +210,7 @@ class DiagSheafCC(BaseOrchestrator):
             Z_j = torch.cat(embs_2, dim=0)
 
             # Perform edge alignment
-            Z_j_hat = Z_j @ self.diagonal_maps[edge]
+            Z_j_hat = Z_j @ self.diagonal_maps[edge].to(self.device)
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
             # Point-wise FOSCTTM

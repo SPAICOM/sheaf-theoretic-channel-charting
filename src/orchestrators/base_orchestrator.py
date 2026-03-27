@@ -347,19 +347,19 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
         CT = torch.zeros(N)
         for i in range(N):
-            # Get K nearest neighbors in the original space
+            # Get K nearest neighbors in the original space (k=K+1 to exclude self)
             x = pos[i, :]
-            _, Ux = pos_KDTree.query(x, k=K)
+            _, Ux = pos_KDTree.query(x, k=K + 1)
+            Ux = Ux[1:]  # discard self (rank 0)
 
-            # Get the corresponding of the KNN in the representation space
-            Vx = embs[Ux, :]
+            # Global ranks of all points in embedding space from i
+            D_all = torch.linalg.norm(embs - embs[i, :], dim=1)
+            D_all[i] = float('inf')  # exclude self
+            global_ranks = torch.argsort(torch.argsort(D_all)) + 1  # 1-indexed
 
-            # Rank the corresponding of the KNN in the representation space by distance
-            D = torch.linalg.norm(Vx - embs[i, :])
-            r = torch.argsort(D)
-
-            # Retrieve point-wise continuity
-            CT[i] = 1 - F * (r - K)
+            # Penalty: sum max(0, rank - K) for each original K-NN
+            r = global_ranks[Ux]
+            CT[i] = 1 - F * torch.sum(torch.clamp(r - K, min=0))
 
         return torch.mean(CT)
 
@@ -376,19 +376,19 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
         TW = torch.zeros(N)
         for i in range(N):
-            # Get K nearest neihbors in the representation space
+            # Get K nearest neighbors in the representation space (k=K+1 to exclude self)
             x = embs[i, :]
-            _, Vx = embs_KDTree.query(x, k=K)
+            _, Vx = embs_KDTree.query(x, k=K + 1)
+            Vx = Vx[1:]  # discard self (rank 0)
 
-            # Get the corresponding of the KNN in the original space
-            Ux = pos[Vx, :]
+            # Global ranks of all points in original space from i
+            D_all = torch.linalg.norm(pos - pos[i, :], dim=1)
+            D_all[i] = float('inf')  # exclude self
+            global_ranks = torch.argsort(torch.argsort(D_all)) + 1  # 1-indexed
 
-            # Rank the corresponding of the KNN in the original space by distance
-            D = torch.linalg.norm(Ux - pos[i, :])
-            r = torch.argsort(D)
-
-            # Retrieve point-wise continuity
-            TW[i] = 1 - F * (r - K)
+            # Penalty: sum max(0, rank - K) for each embedding K-NN
+            r = global_ranks[Vx]
+            TW[i] = 1 - F * torch.sum(torch.clamp(r - K, min=0))
 
         return torch.mean(TW)
 
@@ -418,7 +418,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
     def _compute_FOSCTTM(self) -> None:
         pass
 
-    def eval_all(self, K_max: int, K_min: int = 1, step: int = 1):
+    def eval_all(self, K_max: int, K_min: int = 2, step: int = 1):
 
         # Results
         res = {'KS': [], 'CT': defaultdict(list), 'TW': defaultdict(list)}

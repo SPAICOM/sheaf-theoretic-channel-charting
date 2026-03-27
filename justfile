@@ -32,4 +32,7 @@ cs:
 bun:
     {{sim}} orchestrator=bundle
 
+vanilla:
+    {{sim}} orchestrator=vanilla
+
 sim-all: bun cs fb ot fed

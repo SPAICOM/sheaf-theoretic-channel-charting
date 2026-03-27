@@ -11,10 +11,10 @@ val_num_users: 2
 coverage_area: 0.6
 T_min: 1e3
 T_max: 1001
-in_window: 5
-out_window: 10
-n_pos: 3
-n_neg: 3
+in_window: 1
+out_window: 2
+n_pos: null
+n_neg: null
 
 edge_set:
   - [1, 2]

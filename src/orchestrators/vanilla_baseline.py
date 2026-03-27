@@ -122,6 +122,7 @@ class VanillaCC(BaseOrchestrator):
             on_step=on_step,
             on_epoch=True,
             batch_size=batch_size,
+            prog_bar=True,
         )
 
         # No alignment loss in vanilla baseline - total loss is just private loss
@@ -139,6 +140,9 @@ class VanillaCC(BaseOrchestrator):
         -------
         None
         """
+        pass
+
+    def _compute_FOSCTTM(self) -> None:
         pass
 
 if __name__ == '__main__':

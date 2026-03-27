@@ -99,6 +99,9 @@ class OptimalTransportCC(BaseOrchestrator):
 
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
+    def on_train_epoch_end(self) -> None:
+        pass
+
     def _shared_eval(
         self,
         batch: dict[int, list[torch.Tensor]],
@@ -195,7 +198,7 @@ class OptimalTransportCC(BaseOrchestrator):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
-            tuple(sorted((bs1_str, bs2_str)))
+            a, b = tuple(sorted((bs1_str, bs2_str)))
 
             # Accumulate embeddings over the full shared dataset
             embs_1, embs_2 = [], []
@@ -209,9 +212,8 @@ class OptimalTransportCC(BaseOrchestrator):
             Z_j = torch.cat(embs_2, dim=0)
 
             # Perform edge alignment
-            j = bs2_str
-            Z_i_hat = self.transport_layers[f'{i}_{j}'][str(i)](Z_i)
-            Z_j_hat = self.transport_layers[f'{i}_{j}'][str(j)](Z_j)
+            Z_i_hat = self.transport_layers[f'{a}_{b}'][bs1_str](Z_i)
+            Z_j_hat = self.transport_layers[f'{a}_{b}'][bs2_str](Z_j)
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
             # Point-wise FOSCTTM

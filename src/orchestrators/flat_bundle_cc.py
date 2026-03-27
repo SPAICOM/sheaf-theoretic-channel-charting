@@ -225,8 +225,8 @@ class FlatBundleCC(BaseOrchestrator):
             Z_j = torch.cat(embs_2, dim=0)
 
             # Perform edge alignment
-            Z_i_hat = Z_i @ self.local_reference_frames[edge[0]].T
-            Z_j_hat = Z_j @ self.local_reference_frames[edge[1]].T
+            Z_i_hat = Z_i @ self.local_reference_frames[edge[0]].to(self.device).T
+            Z_j_hat = Z_j @ self.local_reference_frames[edge[1]].to(self.device).T
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
             # Point-wise FOSCTTM

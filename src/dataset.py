@@ -149,6 +149,7 @@ class TrajectoryCSIDataset(Dataset):
         channels: np.ndarray,
         pair_mode: str = 'triplet',
         p_positive: float = 0.5,
+        return_raw: bool = False,
     ):
         super().__init__()
 
@@ -158,6 +159,7 @@ class TrajectoryCSIDataset(Dataset):
         self.p_positive = float(p_positive)
 
         self.channels = channels
+        self.return_raw = return_raw
         # Initialize random generator for contrastive sampling
         self.rng = np.random.default_rng()
 
@@ -228,51 +230,50 @@ class TrajectoryCSIDataset(Dataset):
         """
         Return one Siamese sample depending on pair_mode.
 
+        If ``return_raw=True`` the method skips feature extraction and returns
+        ``(H_A, gidx, pos)`` — the raw complex CSI tensor, the global masked
+        index, and the 2-D position — which is useful for sanity-checking the
+        index mapping against the original DeepMIMO arrays.
+
         Returns
         -------
-        xA, xP, xN, y
-            CSI vectors and label / placeholder.
+        xA, xP, xN, y, pos  (normal mode)
+            Processed CSI feature vectors, label, and anchor position.
+        H_A, gidx, pos  (return_raw=True)
+            Raw complex CSI tensor, masked global index, and anchor position.
         """
         # Anchor
         id = list(self.idx_to_neg_pos.keys())[index]
-        H_A = self._H_from_global_index(id[1])
+        gidx = id[1]
+        H_A = self._H_from_global_index(gidx)
+        pos = self._pos_from_global_index(gidx)
+
+        if self.return_raw:
+            return H_A, gidx, pos
 
         pos_idxs = self.idx_to_neg_pos[id]['pos']
         neg_idxs = self.idx_to_neg_pos[id]['neg']
 
         match self.pair_mode:
             case 'triplet':
-                # Triplet
-
                 xA = csi_to_realvec(H_A)
                 xP = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs])
                 xN = torch.vstack([csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs])
-
                 y = torch.tensor(-1, dtype=torch.long)
 
             case 'contrastive':
-                # Contrastive:
                 # sample positive pair with prob p_positive else negative pair
-                if self.rng.random() < self.p_positive:
-                    xA = csi_to_realvec(H_A)
-                    xP = torch.vstack(
-                        [csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs]
-                    )
-                    xN = torch.vstack(
-                        [csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs]
-                    )
-                    y = torch.tensor(1, dtype=torch.long)
-                else:
-                    xA = csi_to_realvec(H_A)
-                    xP = torch.vstack(
-                        [csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs]
-                    )
-                    xN = torch.vstack(
-                        [csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs]
-                    )
-                    y = torch.tensor(0, dtype=torch.long)
-
-        pos = self._pos_from_global_index(id[1])
+                xA = csi_to_realvec(H_A)
+                xP = torch.vstack(
+                    [csi_to_realvec(self._H_from_global_index(i)) for i in pos_idxs]
+                )
+                xN = torch.vstack(
+                    [csi_to_realvec(self._H_from_global_index(i)) for i in neg_idxs]
+                )
+                y = torch.tensor(
+                    1 if self.rng.random() < self.p_positive else 0,
+                    dtype=torch.long,
+                )
 
         return xA, xP, xN, y, pos
 
@@ -290,8 +291,6 @@ class SharedTrajectoryCSIDataset(Dataset):
 
     Parameters
     ----------
-    shared_mask : np.ndarray
-        Boolean mask indicating valid shared positions.
     shared_pos : np.ndarray
         Positions of shared receiver locations, shape (N_shared, 2 or 3).
     channels_bs_1 : np.ndarray
@@ -309,6 +308,8 @@ class SharedTrajectoryCSIDataset(Dataset):
         Index of the first base station.
     idx_bs_2 : int
         Index of the second base station.
+    shared_pos : np.ndarray
+        Positions of the trajectory anchor points in the shared coverage area.
     channels_bs_1 : np.ndarray
         CSI data from base station 1.
     channels_bs_2 : np.ndarray
@@ -322,20 +323,20 @@ class SharedTrajectoryCSIDataset(Dataset):
 
     def __init__(
         self,
-        shared_mask: np.ndarray,
         shared_pos: np.ndarray,
         channels_bs_1: np.ndarray,
         channels_bs_2: np.ndarray,
         idx_bs_1: int,
         idx_bs_2: int,
+        shared_traj_idxs: np.ndarray | None = None,
     ):
         super().__init__()
 
         self.idx_bs_1 = idx_bs_1
         self.idx_bs_2 = idx_bs_2
 
-        self.shared_mask = shared_mask
         self.shared_pos = shared_pos
+        self.shared_traj_idxs = shared_traj_idxs  # gidxs into rx_pos_all_masked
 
         # Store CSI data: (num_points, R, T, F) for each base station
         self.channels_bs_1 = channels_bs_1
