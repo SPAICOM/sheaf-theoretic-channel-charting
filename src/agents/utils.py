@@ -58,9 +58,6 @@ class DistanceLayer(nn.Module):
                 # Distance computation (batching + broadcasting)
                 dist = (z1 - z2).pow(2).sum(dim=-1)  # (B, K)
 
-                # Sum over positives/negatives per anchor → (B,)
-                return dist.sum(dim=1)
-
             case 'cosine':
                 # Normalize
                 z1 = F.normalize(z1, dim=-1)  # (B, D)
@@ -74,10 +71,11 @@ class DistanceLayer(nn.Module):
 
                 # Convert to cosine distance, sum over pos/neg → (B,)
                 dist = 1 - sim  # (B, K)
-                return dist.sum(dim=1)
 
             case _:
-                return None
+                dist = None
+        
+        return dist
 
 
 class LossLayer(nn.Module):

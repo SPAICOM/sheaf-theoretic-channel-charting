@@ -38,6 +38,8 @@ class Encoder(nn.Module):
         Dimension of the output embedding (e.g., 2D channel chart).
     num_hidden_layers : int, default=3
         Number of linear layers in the encoder.
+    dropout : float, default=0.0
+        Dropout probability applied after each hidden linear layer.
     """
 
     def __init__(
@@ -45,6 +47,7 @@ class Encoder(nn.Module):
         in_dim: int,
         out_dim: int = 2,
         num_hidden_layers: int = 3,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -58,6 +61,7 @@ class Encoder(nn.Module):
         # Container for linear layers
         self.linear_layers = nn.ModuleList()
         self.norm_layers = nn.ModuleList()
+        self.dropout_layers = nn.ModuleList()
 
         dim = in_dim
 
@@ -65,10 +69,18 @@ class Encoder(nn.Module):
         for _ in range(self.num_hidden_layers - 1):
             self.linear_layers.append(nn.Linear(dim, dim // 2))
             self.norm_layers.append(nn.BatchNorm1d(dim // 2))
+            self.dropout_layers.append(nn.Dropout(p=dropout))
             dim = dim // 2
 
         # Final projection layer producing the embedding
         self.linear_layers.append(nn.Linear(dim, self.out_dim))
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for layer in self.linear_layers:
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
 
     def forward(
         self,
@@ -93,10 +105,11 @@ class Encoder(nn.Module):
             BS, P, _ = x.shape
             x = x.reshape(BS * P, -1)
 
-        # Apply activation + BatchNorm to all layers except the last
+        # Apply activation + BatchNorm + Dropout to all layers except the last
         for i in range(self.num_hidden_layers - 1):
             x = self.act(self.linear_layers[i](x))
             x = self.norm_layers[i](x)
+            x = self.dropout_layers[i](x)
 
         # Final linear projection (no activation)
         x = self.linear_layers[-1](x)
@@ -130,6 +143,8 @@ class Decoder(nn.Module):
         Dimension of the reconstructed feature vector.
     num_hidden_layers : int, default=6
         Number of linear layers in the decoder.
+    dropout : float, default=0.0
+        Dropout probability applied after each hidden linear layer.
     """
 
     def __init__(
@@ -137,6 +152,7 @@ class Decoder(nn.Module):
         in_dim: int = 2,
         out_dim: int = 256,
         num_hidden_layers: int = 6,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -150,6 +166,7 @@ class Decoder(nn.Module):
         # Container for decoder layers
         self.layers = nn.ModuleList()
         self.norm_layers = nn.ModuleList()
+        self.dropout_layers = nn.ModuleList()
 
         dim = in_dim
 
@@ -157,10 +174,18 @@ class Decoder(nn.Module):
         for _ in range(self.num_hidden_layers - 1):
             self.layers.append(nn.Linear(dim, dim * 2))
             self.norm_layers.append(nn.BatchNorm1d(dim * 2))
+            self.dropout_layers.append(nn.Dropout(p=dropout))
             dim = dim * 2
 
         # Final reconstruction layer
         self.layers.append(nn.Linear(dim, self.out_dim))
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for layer in self.layers:
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
 
     def forward(
         self,
@@ -185,10 +210,11 @@ class Decoder(nn.Module):
             BS, P, _ = x.shape
             x = x.reshape(BS * P, -1)
 
-        # Apply activation to all layers except the last
+        # Apply activation + BatchNorm + Dropout to all layers except the last
         for i in range(self.num_hidden_layers - 1):
             x = self.act(self.layers[i](x))
             x = self.norm_layers[i](x)
+            x = self.dropout_layers[i](x)
 
         if shape_3d:
             x = x.reshape(BS, P, -1)
@@ -236,6 +262,9 @@ class Agent(nn.Module):
         Margin parameter used in Siamese losses.
     lr : float, default=1e-3
         Learning rate for the optimizer.
+    dropout : float, default=0.0
+        Dropout probability applied after each hidden linear layer in the
+        encoder and decoder.
     """
 
     def __init__(
@@ -248,6 +277,7 @@ class Agent(nn.Module):
         use_decoder: bool = True,
         margin: float = 1.0,
         lr: float = 1e-3,
+        dropout: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -270,6 +300,7 @@ class Agent(nn.Module):
             in_dim=in_dim,
             out_dim=out_dim,
             num_hidden_layers=num_hidden_layers,
+            dropout=dropout,
         )
 
         self.decoder = (
@@ -277,6 +308,7 @@ class Agent(nn.Module):
                 in_dim=out_dim,
                 out_dim=in_dim,
                 num_hidden_layers=num_hidden_layers,
+                dropout=dropout,
             )
             if use_decoder
             else None

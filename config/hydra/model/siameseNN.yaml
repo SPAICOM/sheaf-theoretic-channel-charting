@@ -6,5 +6,6 @@ loss_mode: triplet
 out_dim: 2
 num_hidden_layers: 6
 margin: 1
+dropout: 0.0
 
 

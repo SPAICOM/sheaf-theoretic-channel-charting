@@ -6,15 +6,15 @@ num_workers: 0
 pin_memory: true
 
 trajectory_kind: neighbor_linear
-train_num_users: 4
-val_num_users: 2
+train_num_users: 40
+val_num_users: 20
 coverage_area: 0.6
 T_min: 1e3
 T_max: 1001
-in_window: 1
-out_window: 2
-n_pos: null
-n_neg: null
+in_window: 5
+out_window: 20
+n_pos: 3
+n_neg: 3
 
 edge_set:
   - [1, 2]

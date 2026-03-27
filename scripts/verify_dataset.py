@@ -43,6 +43,10 @@ from __future__ import annotations
 import argparse
 import sys
 
+import matplotlib
+matplotlib.use('Agg')  # headless backend — works with and without a display
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 import numpy as np
 import omegaconf
 import torch
@@ -340,6 +344,127 @@ def check_shared_dataset_consistency(
     return total_failures
 
 
+# ── triplet visualisation ─────────────────────────────────────────────────────
+
+def plot_triplet_batch(
+    dm: CSIDataModule,
+    bs_id: int,
+    rng: np.random.Generator,
+    n_anchors: int = 4,
+    output_path: str = 'triplets.png',
+) -> None:
+    """Plot a 2×2 grid of anchor/positive/negative triplets for one BS.
+
+    For each of the *n_anchors* randomly chosen anchors the panel shows:
+      - the **full trajectory** of the owning user as a grey line
+      - **anchor** as a large black star
+      - **positive** samples as green circles
+      - **negative** samples as red crosses
+
+    Parameters
+    ----------
+    dm : CSIDataModule
+    bs_id : int
+        Index of the base station whose local dataset is used.
+    rng : np.random.Generator
+    n_anchors : int
+        Number of anchors to display (must be a perfect square for the grid,
+        but the grid is always 2×2 so pass 4).
+    output_path : str or None
+        If given, save the figure to this path instead of showing it.
+    """
+    ds_local = dm.train_local_dataset[bs_id]
+    rx_pos = dm.rx_pos_all_masked          # (N_masked, 2)
+
+    bs_xy = dm.ds[bs_id].bs_pos.squeeze()[:2]          # (2,)
+    coverage_radius = dm.bs_coords[bs_id]['coverage_radius']
+
+    # Group all gidxs by user so we can draw full trajectories
+    user_to_gidxs: dict[int, list[int]] = {}
+    for (uid, gidx) in ds_local.idx_to_neg_pos:
+        user_to_gidxs.setdefault(uid, []).append(gidx)
+
+    keys = list(ds_local.idx_to_neg_pos.keys())
+    chosen_keys = [keys[int(i)] for i in rng.choice(len(keys), size=n_anchors, replace=False)]
+
+    ncols = 2
+    nrows = (n_anchors + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(10, 9))
+    axes = np.array(axes).reshape(-1)
+
+    for ax, (uid, anchor_gidx) in zip(axes, chosen_keys):
+        entry = ds_local.idx_to_neg_pos[(uid, anchor_gidx)]
+        pos_gidxs = entry['pos']
+        neg_gidxs = entry['neg']
+
+        # Full trajectory for this user — preserve insertion order (= temporal order)
+        traj_gidxs = user_to_gidxs[uid]
+        traj_xy = rx_pos[traj_gidxs]         # (T, 2)
+
+        anchor_xy = rx_pos[anchor_gidx]       # (2,)
+        pos_xy    = rx_pos[pos_gidxs]         # (n_pos, 2)
+        neg_xy    = rx_pos[neg_gidxs]         # (n_neg, 2)
+
+        # Trajectory line
+        ax.plot(traj_xy[:, 0], traj_xy[:, 1],
+                color='lightgrey', linewidth=1.0, zorder=1, label='trajectory')
+
+        # Negative samples
+        ax.scatter(neg_xy[:, 0], neg_xy[:, 1],
+                   c='red', marker='x', s=50, linewidths=1.5,
+                   zorder=3, label=f'negatives ({len(neg_gidxs)})')
+
+        # Positive samples
+        ax.scatter(pos_xy[:, 0], pos_xy[:, 1],
+                   c='limegreen', marker='o', s=40, edgecolors='darkgreen',
+                   linewidths=0.8, zorder=4, label=f'positives ({len(pos_gidxs)})')
+
+        # Anchor
+        ax.scatter([anchor_xy[0]], [anchor_xy[1]],
+                   c='black', marker='*', s=200, zorder=5, label='anchor')
+
+        ax.set_title(f'BS {bs_id}  |  user {uid}  |  gidx {anchor_gidx}', fontsize=9)
+        ax.set_xlabel('x (m)', fontsize=8)
+        ax.set_ylabel('y (m)', fontsize=8)
+        ax.legend(fontsize=7, loc='best')
+        ax.tick_params(labelsize=7)
+        ax.set_aspect('equal', adjustable='datalim')
+
+        # Fix limits from trajectory data before adding the (potentially large) circle
+        ax.autoscale_view()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        # BS position and coverage area — clipped to current view
+        ax.scatter([bs_xy[0]], [bs_xy[1]],
+                   c='royalblue', marker='^', s=120, zorder=6, label=f'BS {bs_id}',
+                   clip_on=True)
+        ax.add_patch(Circle(
+            (bs_xy[0], bs_xy[1]), coverage_radius,
+            facecolor='royalblue', alpha=0.06, edgecolor='royalblue',
+            linewidth=0.8, zorder=0, clip_on=True,
+        ))
+
+        # Restore data-driven limits so the circle doesn't rescale the axes
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+    # Hide any unused axes (if n_anchors < nrows*ncols)
+    for ax in axes[n_anchors:]:
+        ax.set_visible(False)
+
+    fig.suptitle(
+        f'Triplet sampling sanity-check — BS {bs_id}\n'
+        'grey line: full user trajectory | ★: anchor | ●: positives | ✕: negatives',
+        fontsize=10,
+    )
+    fig.tight_layout()
+
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f'\n  [PLOT] saved to {output_path}')
+    plt.close(fig)
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -350,6 +475,10 @@ def main() -> None:
                         help='Base-station index to verify (default: 0)')
     parser.add_argument('--seed', type=int, default=0,
                         help='Random seed (default: 0)')
+    parser.add_argument('--plot', action='store_true',
+                        help='Generate triplet visualisation plot')
+    parser.add_argument('--plot-output', type=str, default=None,
+                        help='Save plot to this path instead of showing it (e.g. triplets.png)')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -407,6 +536,13 @@ def main() -> None:
         print('ALL CHECKS PASSED — indexing is consistent.')
     else:
         print(f'{total_failures} check(s) FAILED — indexing has issues.')
+
+    if args.plot:
+        print('\nGenerating triplet visualisation …')
+        out = args.plot_output or f'triplets_bs{args.bs_id}.png'
+        plot_triplet_batch(dm, args.bs_id, rng, n_anchors=4, output_path=out)
+
+    if total_failures:
         sys.exit(1)
 
 
