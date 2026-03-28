@@ -15,7 +15,7 @@ from hydra.utils import instantiate
 from lightning import Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
 
-from src.datamodule import CSIDataModule
+from src.datamodules.deepmimo import DeepMimoDataModule
 from src.utils import remove_non_empty_dir
 
 
@@ -67,7 +67,7 @@ def main(cfg: DictConfig) -> None:
     # ===================================================
     #             Define the DataModule
     # ===================================================
-    datamodule = CSIDataModule(cfg.dataset, seed=cfg.seed)
+    datamodule = DeepMimoDataModule(cfg.dataset, seed=cfg.seed)
     datamodule.prepare_data()
     datamodule.setup('fit')
 
@@ -108,7 +108,6 @@ def main(cfg: DictConfig) -> None:
     orchestrator.eval_all(K_max=10)
 
     # Cleaning the working space
-    remove_non_empty_dir('./wandb/')
     remove_non_empty_dir('./multirun/')
     remove_non_empty_dir('./outputs/')
     remove_non_empty_dir('~/.cache/wandb/')

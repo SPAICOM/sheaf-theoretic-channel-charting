@@ -8,7 +8,6 @@ logger:
   _target_: lightning.pytorch.loggers.WandbLogger
   project: sheaf_cc_mega_sim
   name: ${hydra:runtime.choices.orchestrator}_${now:%Y-%m-%d}_${now:%H-%M-%S}
-  save_dir: checkpoints
   log_model: false
 
 seed: 80

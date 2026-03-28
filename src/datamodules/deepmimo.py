@@ -27,7 +27,7 @@ from omegaconf import DictConfig, OmegaConf
 from scipy.spatial import cKDTree as KDTree
 from torch.utils.data import DataLoader
 
-from .dataset import (
+from ..datasets import (
     SharedTrajectoryCSIDataset,
     TrajectoryCSIDataset,
     csi_to_realvec,
@@ -76,7 +76,7 @@ def _merge_defaults(
     return out
 
 
-class CSIDataModule(l.LightningDataModule):
+class DeepMimoDataModule(l.LightningDataModule):
     """
     PyTorch Lightning DataModule for trajectory-based CSI learning.
 
@@ -157,7 +157,7 @@ class CSIDataModule(l.LightningDataModule):
         seed: int | None = None,
     ):
         """
-        Initialize the CSIDataModule.
+        Initialize the DeepMimoDataModule.
 
         Parameters
         ----------

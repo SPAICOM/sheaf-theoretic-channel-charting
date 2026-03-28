@@ -1,7 +1,7 @@
 """
 Verification script for CSI / position index consistency.
 
-Checks that the three layers of indexing in CSIDataModule are mutually
+Checks that the three layers of indexing in DeepMimoDataModule are mutually
 consistent with the original DeepMIMO arrays, and that the triplet
 sampling produces geometrically/spectrally sensible pairs:
 
@@ -55,8 +55,8 @@ from matplotlib.patches import Circle
 # ── project root on path ──────────────────────────────────────────────────────
 sys.path.insert(0, '.')
 
-from src.datamodule import CSIDataModule
-from src.dataset import TrajectoryCSIDataset, csi_to_realvec
+from src.datamodules.deepmimo import DeepMimoDataModule
+from src.datasets import TrajectoryCSIDataset, csi_to_realvec
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ def _check_allclose(
 # ── verification routines ─────────────────────────────────────────────────────
 
 
-def check_position_mapping(dm: CSIDataModule, gidxs: np.ndarray) -> int:
+def check_position_mapping(dm: DeepMimoDataModule, gidxs: np.ndarray) -> int:
     """Check 1: rx_pos_all_masked[gidx] == rx_pos_all[valid_idxs_all[gidx]][:2]"""
     print('\n── Check 1: position mapping ───────────────────────────────────────')
     failures = 0
@@ -102,7 +102,7 @@ def check_position_mapping(dm: CSIDataModule, gidxs: np.ndarray) -> int:
     return failures
 
 
-def check_channel_mapping(dm: CSIDataModule, bs_id: int, gidxs: np.ndarray) -> int:
+def check_channel_mapping(dm: DeepMimoDataModule, bs_id: int, gidxs: np.ndarray) -> int:
     """Check 2: bs_coords[bs_id]['channels'][gidx] == ds[bs_id].channels[valid_idxs_all[gidx]]"""
     print(f'\n── Check 2: channel mapping  (BS {bs_id}) ──────────────────────────')
     failures = 0
@@ -120,7 +120,7 @@ def check_channel_mapping(dm: CSIDataModule, bs_id: int, gidxs: np.ndarray) -> i
 
 
 def check_dataset_getitem(
-    dm: CSIDataModule,
+    dm: DeepMimoDataModule,
     bs_id: int,
     n_samples: int,
     rng: np.random.Generator,
@@ -168,7 +168,7 @@ def check_dataset_getitem(
 
 
 def _sample_triplet_entries(
-    dm: CSIDataModule,
+    dm: DeepMimoDataModule,
     bs_id: int,
     n_samples: int,
     rng: np.random.Generator,
@@ -189,7 +189,7 @@ def _sample_triplet_entries(
 
 
 def check_spatial_ordering(
-    dm: CSIDataModule,
+    dm: DeepMimoDataModule,
     bs_id: int,
     n_samples: int,
     rng: np.random.Generator,
@@ -221,7 +221,7 @@ def check_spatial_ordering(
 
 
 def check_csi_ordering(
-    dm: CSIDataModule,
+    dm: DeepMimoDataModule,
     bs_id: int,
     n_samples: int,
     rng: np.random.Generator,
@@ -267,7 +267,7 @@ def check_csi_ordering(
 
 
 def check_shared_dataset_consistency(
-    dm: CSIDataModule,
+    dm: DeepMimoDataModule,
     n_samples: int,
     rng: np.random.Generator,
 ) -> int:
@@ -350,7 +350,7 @@ def check_shared_dataset_consistency(
 
 
 def plot_triplet_batch(
-    dm: CSIDataModule,
+    dm: DeepMimoDataModule,
     bs_id: int,
     rng: np.random.Generator,
     n_anchors: int = 4,
@@ -366,7 +366,7 @@ def plot_triplet_batch(
 
     Parameters
     ----------
-    dm : CSIDataModule
+    dm : DeepMimoDataModule
     bs_id : int
         Index of the base station whose local dataset is used.
     rng : np.random.Generator
@@ -556,8 +556,8 @@ def main() -> None:
         }
     )
 
-    print('Setting up CSIDataModule …')
-    dm = CSIDataModule(dataset_cfg=cfg, seed=args.seed)
+    print('Setting up DeepMimoDataModule …')
+    dm = DeepMimoDataModule(dataset_cfg=cfg, seed=args.seed)
     dm.prepare_data()
     dm.setup()
     print(f'  valid_idxs_all : {len(dm.valid_idxs_all)} points (union of all BS coverage areas)')

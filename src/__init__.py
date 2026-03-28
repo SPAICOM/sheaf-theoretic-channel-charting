@@ -1,5 +1,6 @@
 from .agents import Agent
-from .datamodule import CSIDataModule
+from .datamodules.deepmimo import DeepMimoDataModule
+from .datamodules.dichasus import DICHASUSDataModule
 from .orchestrators import (
     BundleCC,
     CoverSheafCC,
@@ -13,7 +14,8 @@ from .orchestrators import (
 )
 
 __all__ = [
-    'CSIDataModule',
+    'DeepMimoDataModule',
+    'DICHASUSDataModule',
     'Agent',
     'FederatedCC',
     'OptimalTransportCC',

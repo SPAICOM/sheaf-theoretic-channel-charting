@@ -582,7 +582,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
     @torch.no_grad()
     def plot_latent_space(
         self,
-        output_dir: Path = Path('img'),
+        output_dir: Path = Path('imgs'),
         n_clusters: int = 4,
         use_clusters: bool = True,
         split: str = 'test',

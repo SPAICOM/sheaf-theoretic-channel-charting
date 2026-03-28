@@ -11,7 +11,7 @@ from hydra.utils import instantiate
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
 
-from src import CSIDataModule
+from src import DeepMimoDataModule
 
 
 @hydra.main(
@@ -23,7 +23,7 @@ def main(cfg: DictConfig):
     # -----------------------------
     # Load DeepMIMO
     # -----------------------------
-    dm = CSIDataModule(cfg.dataset, seed=cfg.seed)
+    dm = DeepMimoDataModule(cfg.dataset, seed=cfg.seed)
     dm.prepare_data()
     dm.setup('fit')
 
