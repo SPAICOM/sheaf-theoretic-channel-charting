@@ -1,4 +1,4 @@
-scenario: city_3_houston_3p5
+scenario: city_13_columbus_3p5
 download: true
 
 batch_size: 16
@@ -6,16 +6,15 @@ num_workers: 0
 pin_memory: true
 
 exclude_buildings: true
-inscribed_ellipse: true
+inscribed_ellipse: false
+streets_only: false
 trajectory_kind: neighbor_linear
 heading_momentum: 0.7
 train_num_users: 1
 val_num_users: 1
-test_num_users: 10
-
 coverage_area: 0.6
-T_min: 6e3
-T_max: 7e3
+T_min: 1e3
+T_max: 2e3
 in_window: 5
 out_window: 20
 n_pos: 1
@@ -30,6 +29,3 @@ compute_channels:
   max_subcarriers: 288
   ue_antenna:
     shape: [4, 1]
-  bs_antenna:
-    shape: [8, 1]
-  noise_power: -104.0

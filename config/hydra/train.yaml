@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - dataset: city_3_houston_3p5
+  - dataset: city_13_columbus_3p5
   - model: siameseNN
   - orchestrator: cover_sheaf
 

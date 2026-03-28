@@ -13,7 +13,7 @@ The DataModule follows the PyTorch Lightning lifecycle:
     prepare_data() -> setup() -> train/val/test_dataloader()
 """
 
-from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 import deepmimo as dm
@@ -127,9 +127,10 @@ class CSIDataModule(l.LightningDataModule):
         'z_min': None,
         'z_max': None,
         'linear_len': (20.0, 120.0),
-        'circle_r': (10.0, 60.0),
+        'circle_diameter': (20.0, 120.0),
         'random_step': (1.0, 5.0),
         'random_keep_dir': 0.7,
+        'heading_momentum': 0.8,  # 0=no memory, 1=fixed
         'trajectory_kind': 'full',
         'pair_mode': 'triplet',  # "triplet" or "contrastive"
         'in_window': 3,
@@ -144,6 +145,10 @@ class CSIDataModule(l.LightningDataModule):
         'test_seed': 42,
         'val_seed': 123,
         'edge_set': [],
+        'exclude_buildings': False,  # filter out RX positions inside building footprints
+        'streets_only': False,  # restrict feasible set to street areas only
+        'streets_proximity_dist': 15.0,  # max distance (m) from a building to count as "street"
+        'inscribed_ellipse': False,  # restrict to largest ellipse inside coverage
     }
 
     def __init__(
@@ -221,6 +226,160 @@ class CSIDataModule(l.LightningDataModule):
 
         return None
 
+    # ----------------- Building mask -----------------
+    @staticmethod
+    def _build_hull_equations(
+        scene,
+        min_hull_area: float = 0.0,
+        max_hull_area: float = 1000.0,
+    ) -> list[np.ndarray]:
+        """
+        Compute 2D convex hull equations for scene objects whose hull area
+        falls within [min_hull_area, max_hull_area].
+
+        In the Houston DeepMIMO scenario objects labelled 'buildings' include
+        both actual buildings (≤ 342 m²) and road/highway surfaces (≥ 3420 m²).
+        The default range [0, 1000] selects only real buildings.
+        Passing min_hull_area=1000 / max_hull_area=inf selects roads only.
+
+        Returns list of (M_i, 3) half-plane equation arrays [a,b,c]
+        s.t. ax + by + c <= 0 defines the interior of the hull.
+        """
+        from scipy.spatial import ConvexHull
+
+        hulls = []
+        for b in scene.get_objects('buildings'):
+            verts_xy = np.unique(np.array(b.vertices)[:, :2], axis=0)
+            if len(verts_xy) < 3:
+                continue
+            try:
+                hull = ConvexHull(verts_xy)
+                if hull.volume < min_hull_area or hull.volume > max_hull_area:
+                    continue
+                hulls.append(hull.equations)
+            except Exception:
+                continue
+        return hulls
+
+    @staticmethod
+    def _outside_buildings_mask(
+        rx_pos_xy: np.ndarray, hull_equations: list[np.ndarray]
+    ) -> np.ndarray:
+        """
+        Return a boolean mask of RX positions that lie outside all building footprints.
+
+        Parameters
+        ----------
+        rx_pos_xy : np.ndarray
+            Array of shape (N, 2) with XY coordinates of RX positions.
+        hull_equations : list of np.ndarray
+            Pre-computed 2D hull equations from _build_hull_equations().
+
+        Returns
+        -------
+        np.ndarray
+            Boolean array of shape (N,), True where the position is NOT inside any building.
+        """
+        inside = np.zeros(len(rx_pos_xy), dtype=bool)
+        for eqs in hull_equations:
+            # eqs: (M, 3) — ax+by+c <= 0 for interior
+            inside |= np.all(rx_pos_xy @ eqs[:, :2].T + eqs[:, 2] <= 0, axis=1)
+        return ~inside
+
+    @staticmethod
+    def _compute_inscribed_ellipse(
+        coverage_xy: np.ndarray,
+        bs_positions_2d: np.ndarray,
+        coverage_radii: np.ndarray,
+        n_angle_samples: int = 720,
+    ) -> tuple[np.ndarray, float, float]:
+        """
+        Find the largest axis-aligned ellipse inscribed in the union of BS
+        coverage circles.
+
+        The ellipse is centered at the centroid of ``coverage_xy`` and its
+        aspect ratio is fixed to match the bounding box of those positions.
+        A binary search on a common scale factor yields the maximum
+        semi-axes (a along x, b along y) such that every point on the
+        ellipse boundary lies within at least one coverage circle.
+
+        Parameters
+        ----------
+        coverage_xy : np.ndarray, shape (N, 2)
+            XY positions currently inside the union coverage area (used only
+            to derive the centroid and bounding-box aspect ratio).
+        bs_positions_2d : np.ndarray, shape (B, 2)
+        coverage_radii : np.ndarray, shape (B,)
+        n_angle_samples : int
+            Number of boundary points sampled for containment checks.
+
+        Returns
+        -------
+        center : np.ndarray, shape (2,)
+        semi_a : float   semi-axis along x
+        semi_b : float   semi-axis along y
+        """
+        center = coverage_xy.mean(axis=0)
+
+        bbox_w = float(np.ptp(coverage_xy[:, 0]))
+        bbox_h = float(np.ptp(coverage_xy[:, 1]))
+        aspect = bbox_w / bbox_h  # a = aspect * b
+
+        angles = np.linspace(0, 2 * np.pi, n_angle_samples, endpoint=False)
+        # Unit-ellipse direction vectors: scale by (aspect, 1) so that when
+        # multiplied by scalar s they give (a*cos θ, b*sin θ) = (aspect*s*cos θ, s*sin θ)
+        dirs = np.stack([aspect * np.cos(angles), np.sin(angles)], axis=1)
+
+        def all_in_union(scale: float) -> bool:
+            pts = center + scale * dirs
+            covered = np.zeros(n_angle_samples, dtype=bool)
+            for bp, r in zip(bs_positions_2d, coverage_radii):
+                covered |= np.linalg.norm(pts - bp, axis=1) <= r
+            return bool(covered.all())
+
+        # Safe upper bound: b can't exceed r_max (the ellipse can't be wider
+        # than the largest coverage circle), so b_max = r_max and s = b.
+        hi = float(coverage_radii.max())
+        lo = 0.0
+        for _ in range(64):
+            mid = (lo + hi) / 2
+            if all_in_union(mid):
+                lo = mid
+            else:
+                hi = mid
+
+        return center, lo * aspect, lo
+
+    # ----------------- Building crossing check -----------------
+    def _segments_cross_buildings(self, p1: np.ndarray, candidates: np.ndarray) -> np.ndarray:
+        """
+        Return a boolean mask (K,) — True where the straight-line segment
+        from p1 to candidates[k] crosses the interior of at least one
+        building convex hull (Liang-Barsky algorithm).
+        """
+        K = len(candidates)
+        blocked = np.zeros(K, dtype=bool)
+        dirs = candidates - p1  # (K, 2)
+
+        for eqs in self.building_hull_equations:
+            # eqs: (M, 3)  —  n·x + c ≤ 0 defines the interior
+            u = dirs @ eqs[:, :2].T  # (K, M)
+            w = eqs[:, :2] @ p1 + eqs[:, 2]  # (M,)
+
+            # u==0 & w>0  →  segment parallel to & outside this half-plane
+            #   → cannot be inside hull  →  no intersection
+            no_hit = np.any((np.abs(u) < 1e-10) & (w[None, :] > 1e-10), axis=1)
+
+            safe_u = np.where(np.abs(u) > 1e-10, u, 1.0)
+            t = -w[None, :] / safe_u  # (K, M)
+
+            t_hi = np.where(u > 1e-10, t, 1.0).min(axis=1)
+            t_lo = np.where(u < -1e-10, t, 0.0).max(axis=1)
+
+            blocked |= ~no_hit & (t_lo <= t_hi + 1e-10)
+
+        return blocked
+
     # ----------------- Snapping helpers -----------------
     def _snap(
         self,
@@ -257,33 +416,19 @@ class CSIDataModule(l.LightningDataModule):
             covering all feasible points exactly once.
         """
 
-        coords = self.rx_pos_all_masked
-        N = len(coords)
-
+        N = len(self.rx_pos_all_masked)
         visited = np.zeros(N, dtype=bool)
         traj = np.empty(N, dtype=np.int64)
-
-        # random start
         current = int(self.rng.integers(0, N))
 
         for t in range(N):
             traj[t] = current
             visited[current] = True
-
             if t == N - 1:
                 break
-
-            # query several nearest neighbors
-            _, neigh = self.kdtree.query(coords[current], k=20)
-
-            # filter unvisited
-            candidates = [n for n in neigh if not visited[n]]
-
-            if len(candidates) == 0:
-                # fallback: pick random unvisited
-                candidates = np.where(~visited)[0]
-
-            # choose randomly among nearest
+            candidates = [n for n in self.neighbor_graph[current] if not visited[n]]
+            if not candidates:
+                candidates = list(np.where(~visited)[0])
             current = int(self.rng.choice(candidates))
 
         return traj
@@ -292,11 +437,10 @@ class CSIDataModule(l.LightningDataModule):
         self,
         current: int,
         heading: np.ndarray | None,
-        k: int = 20,
         bias: float = 4.0,
     ) -> tuple[int, np.ndarray | None]:
         """
-        Take one step in the neighbor graph, optionally biased toward heading.
+        Take one step on the prebuilt neighbor graph, optionally biased toward heading.
 
         Parameters
         ----------
@@ -305,8 +449,6 @@ class CSIDataModule(l.LightningDataModule):
         heading : np.ndarray | None
             Unit vector (2,) for directional bias.
             If None, the next neighbor is chosen uniformly at random.
-        k : int
-            Number of nearest neighbors to consider.
         bias : float
             Sharpness of the directional bias (higher → more collinear).
 
@@ -315,29 +457,26 @@ class CSIDataModule(l.LightningDataModule):
         next_local : int
             Local index of the chosen next position.
         new_heading : np.ndarray | None
-            Updated heading unit vector (tracks actual movement direction).
-            Returns None if input heading was None.
+            Updated heading unit vector. Returns None if heading was None.
         """
-        k_actual = min(k + 1, len(self.rx_pos_all_masked))
-        _, neigh = self.kdtree.query(self.rx_pos_all_masked[current], k=k_actual)
-        neigh = neigh[neigh != current]
+        neigh = self.neighbor_graph[current]
+        if len(neigh) == 0:
+            return current, heading  # isolated node — stay put
 
         if heading is None:
             return int(self.rng.choice(neigh)), None
 
-        diffs = self.rx_pos_all_masked[neigh] - self.rx_pos_all_masked[current]
+        p1 = self.rx_pos_all_masked[current]
+        diffs = self.rx_pos_all_masked[neigh] - p1
         norms = np.linalg.norm(diffs, axis=1, keepdims=True) + 1e-8
         cosines = (diffs / norms) @ heading
         probs = np.exp(bias * cosines)
         probs /= probs.sum()
-
         chosen = int(self.rng.choice(neigh, p=probs))
 
-        # Update heading from the actual movement taken
-        new_dir = self.rx_pos_all_masked[chosen] - self.rx_pos_all_masked[current]
+        new_dir = self.rx_pos_all_masked[chosen] - p1
         norm = np.linalg.norm(new_dir)
         new_heading = new_dir / norm if norm > 1e-8 else heading
-
         return chosen, new_heading
 
     # ----------------- Trajectory generators -----------------
@@ -396,15 +535,54 @@ class CSIDataModule(l.LightningDataModule):
                 return self._snap(xy)
 
             case 'circular':
-                center = self._rand_anchor_xy()
-                r = float(self.rng.uniform(*self.cfg['circle_r']))
-                phase = float(self.rng.uniform(0, 2 * np.pi))
-                ang = np.linspace(0.0, 2 * np.pi, T, endpoint=False) + phase
-                xy = np.stack(
-                    [center[0] + r * np.cos(ang), center[1] + r * np.sin(ang)],
-                    axis=1,
+                # Oriented circular random walk on the k-NN graph.
+                # The heading at each step is the tangent to the current
+                # position w.r.t. a fixed center, so the path orbits the
+                # center while the radius drifts naturally via the random
+                # walk.  Rotation direction (CW / CCW) is chosen randomly.
+                N = len(self.rx_pos_all_masked)
+                current = int(self.rng.integers(0, N))
+                start_pos = self.rx_pos_all_masked[current]
+
+                # Center placed at a random direction / distance from start
+                r_init = float(self.rng.uniform(*self.cfg['circle_diameter'])) / 2.0
+                ang_to_center = float(self.rng.uniform(0, 2 * np.pi))
+                center = start_pos + r_init * np.array(
+                    [np.cos(ang_to_center), np.sin(ang_to_center)]
                 )
-                return self._snap(xy)
+
+                # CW (-1) or CCW (+1)
+                direction = float(self.rng.choice([-1.0, 1.0]))
+
+                traj = np.empty(T, dtype=np.int64)
+                stuck_buf = np.empty((self._stuck_interval, 2))
+                for t in range(T):
+                    traj[t] = current
+                    stuck_buf[t % self._stuck_interval] = self.rx_pos_all_masked[current]
+                    if (
+                        t > 0
+                        and t % self._stuck_interval == 0
+                        and stuck_buf.std(axis=0).max() < self._stuck_threshold
+                    ):
+                        # Stuck: reset orbit center near current position with new radius/direction
+                        start_pos = self.rx_pos_all_masked[current]
+                        r_init = float(self.rng.uniform(*self.cfg['circle_diameter'])) / 2.0
+                        ang_to_center = float(self.rng.uniform(0, 2 * np.pi))
+                        center = start_pos + r_init * np.array(
+                            [np.cos(ang_to_center), np.sin(ang_to_center)]
+                        )
+                        direction = float(self.rng.choice([-1.0, 1.0]))
+                    radius_vec = self.rx_pos_all_masked[current] - center
+                    norm = np.linalg.norm(radius_vec)
+                    if norm < 1e-8:
+                        ang = float(self.rng.uniform(0, 2 * np.pi))
+                        heading = np.array([np.cos(ang), np.sin(ang)])
+                    else:
+                        r_hat = radius_vec / norm
+                        # Tangent: r_hat rotated 90° in chosen direction
+                        heading = direction * np.array([-r_hat[1], r_hat[0]])
+                    current, _ = self._neighbor_step(current, heading)
+                return traj
 
             case 'random':
                 xy = np.empty((T, 2), dtype=np.float64)
@@ -440,8 +618,18 @@ class CSIDataModule(l.LightningDataModule):
                 ang = float(self.rng.uniform(0, 2 * np.pi))
                 heading = np.array([np.cos(ang), np.sin(ang)])
                 traj = np.empty(T, dtype=np.int64)
+                stuck_buf = np.empty((self._stuck_interval, 2))
                 for t in range(T):
                     traj[t] = current
+                    stuck_buf[t % self._stuck_interval] = self.rx_pos_all_masked[current]
+                    if (
+                        t > 0
+                        and t % self._stuck_interval == 0
+                        and stuck_buf.std(axis=0).max() < self._stuck_threshold
+                    ):
+                        # Stuck: pick a fresh random heading
+                        ang = float(self.rng.uniform(0, 2 * np.pi))
+                        heading = np.array([np.cos(ang), np.sin(ang)])
                     current, heading = self._neighbor_step(current, heading)
                 return traj
 
@@ -459,10 +647,20 @@ class CSIDataModule(l.LightningDataModule):
                     np.array([np.cos(ang1 + turn), np.sin(ang1 + turn)]),
                 ]
                 traj = np.empty(T, dtype=np.int64)
+                stuck_buf = np.empty((self._stuck_interval, 2))
                 offset = 0
                 for length, heading in zip([T1, T2], headings):
                     for step in range(length):
-                        traj[offset + step] = current
+                        t_global = offset + step
+                        traj[t_global] = current
+                        stuck_buf[t_global % self._stuck_interval] = self.rx_pos_all_masked[current]
+                        if (
+                            t_global > 0
+                            and t_global % self._stuck_interval == 0
+                            and stuck_buf.std(axis=0).max() < self._stuck_threshold
+                        ):
+                            ang = float(self.rng.uniform(0, 2 * np.pi))
+                            heading = np.array([np.cos(ang), np.sin(ang)])
                         current, heading = self._neighbor_step(current, heading)
                     offset += length
                 return traj
@@ -512,6 +710,8 @@ class CSIDataModule(l.LightningDataModule):
             - Dictionary mapping user IDs to negative data
         """
         self.idx_to_neg_pos = {}
+        # user_id → full ordered trajectory (for plotting)
+        self._traj_sequences: dict[int, np.ndarray] = {}
         for user_id in range(num_users):
             # Random trajectory length
             T_requested = int(self.rng.integers(self.T_min, self.T_max + 1))
@@ -525,6 +725,7 @@ class CSIDataModule(l.LightningDataModule):
 
             # Generate trajectory of RX indices
             rx_idxs = self._generate_one(kind, T_requested)
+            self._traj_sequences[user_id] = rx_idxs
             T_actual = len(rx_idxs)
 
             for t in range(T_actual):
@@ -613,7 +814,12 @@ class CSIDataModule(l.LightningDataModule):
                 shared_traj_idxs=shared_traj_idxs,
             )
 
-        return local_datasets, shared_datasets, self.idx_to_neg_pos.copy()
+        return (
+            local_datasets,
+            shared_datasets,
+            self.idx_to_neg_pos.copy(),
+            self._traj_sequences.copy(),
+        )
 
     def setup(
         self,
@@ -699,13 +905,90 @@ class CSIDataModule(l.LightningDataModule):
                 'mask': mask,
                 'coverage_radius': float(r_max),
                 'coverage_points': int(np.sum(mask)),
+                'bs_pos_2d': np.array(bs_pos).squeeze()[:2],
             }
             union_mask |= mask
+
+        # ------- Optionally exclude positions inside building footprints -------
+        # ------- Optionally restrict to inscribed ellipse inside coverage union -------
+        self.ellipse_params: tuple[np.ndarray, float, float] | None = None
+        if self.cfg.get('inscribed_ellipse', False):
+            coverage_xy = self.rx_pos_all[union_mask][:, :2]
+            bs_pos_2d = np.stack([self.bs_coords[i]['bs_pos_2d'] for i in range(self.n_agents)])
+            radii = np.array([self.bs_coords[i]['coverage_radius'] for i in range(self.n_agents)])
+            center, semi_a, semi_b = self._compute_inscribed_ellipse(coverage_xy, bs_pos_2d, radii)
+            self.ellipse_params = (center, semi_a, semi_b)
+            ellipse_mask = (
+                (self.rx_pos_all[:, 0] - center[0]) ** 2 / semi_a**2
+                + (self.rx_pos_all[:, 1] - center[1]) ** 2 / semi_b**2
+            ) <= 1.0
+            union_mask &= ellipse_mask
+
+        self.building_hull_equations: list[np.ndarray] = []
+        _scene = getattr(self.ds, 'scene', None) or getattr(self.ds[0], 'scene', None)
+        if self.cfg.get('exclude_buildings', False) and _scene is not None:
+            self.building_hull_equations = self._build_hull_equations(_scene)
+            outside = self._outside_buildings_mask(
+                self.rx_pos_all[:, :2], self.building_hull_equations
+            )
+            union_mask &= outside
+
+        if self.cfg.get('streets_only', False):
+            # Streets = outdoor positions within `streets_proximity_dist` metres of a
+            # building.  Streets are flanked by buildings; parks/plazas are not.
+            # streets_only always implies exclude_buildings (buildings must be excluded
+            # from the feasible set and the crossing check must be active).
+            streets_dist = float(self.cfg.get('streets_proximity_dist', 15.0))
+            if not self.building_hull_equations and _scene is not None:
+                self.building_hull_equations = self._build_hull_equations(_scene)
+                outside = self._outside_buildings_mask(
+                    self.rx_pos_all[:, :2], self.building_hull_equations
+                )
+                union_mask &= outside
+            _bldg_hulls = self.building_hull_equations
+            if _bldg_hulls:
+                _inside_bldg = ~self._outside_buildings_mask(self.rx_pos_all[:, :2], _bldg_hulls)
+                _bldg_xy = self.rx_pos_all[_inside_bldg, :2]
+                if len(_bldg_xy) > 0:
+                    from scipy.spatial import cKDTree as _cKDT
+
+                    _bldg_tree = _cKDT(_bldg_xy)
+                    _dists, _ = _bldg_tree.query(self.rx_pos_all[:, :2], k=1)
+                    union_mask &= _dists < streets_dist
 
         self.valid_idxs_all = np.where(union_mask)[0]
         self.rx_pos_all_masked_3d = self.rx_pos_all[self.valid_idxs_all]
         self.rx_pos_all_masked = self.rx_pos_all_masked_3d[:, :2]
         self.kdtree = KDTree(self.rx_pos_all_masked)
+        self.feasible_centroid = self.rx_pos_all_masked.mean(axis=0)
+        # Typical inter-point distance (median 1st-neighbor distance), used for stuck detection
+        _sample = self.rx_pos_all_masked[: min(500, len(self.rx_pos_all_masked))]
+        self.typical_step_dist = float(np.median(self.kdtree.query(_sample, k=2)[0][:, 1]))
+        # Stuck detector: check every N steps; restart heading if spatial std < threshold
+        self._stuck_interval = int(self.cfg.get('stuck_check_interval', 200))
+        self._stuck_threshold = self.typical_step_dist * float(
+            self.cfg.get('stuck_threshold_steps', 8)
+        )
+
+        # Build 1-hop neighbor graph once: edges connect points within max_step_dist
+        # that are not separated by a building.  Used by all trajectory generators.
+        _max_step_dist = self.typical_step_dist * float(self.cfg.get('max_step_multiplier', 1.5))
+        _N = len(self.rx_pos_all_masked)
+        from collections import defaultdict as _dd
+
+        _adj: dict[int, list[int]] = _dd(list)
+        for _i, _j in self.kdtree.query_pairs(_max_step_dist):
+            _adj[_i].append(_j)
+            _adj[_j].append(_i)
+        self.neighbor_graph: list[np.ndarray] = []
+        for _i in range(_N):
+            _nbrs = np.array(_adj[_i], dtype=np.int64)
+            if len(_nbrs) > 0 and self.building_hull_equations:
+                _blocked = self._segments_cross_buildings(
+                    self.rx_pos_all_masked[_i], self.rx_pos_all_masked[_nbrs]
+                )
+                _nbrs = _nbrs[~_blocked]
+            self.neighbor_graph.append(_nbrs)
 
         # Valid idxs for each BS in the self.rx_pos_all
         for bs_id, base_station in enumerate(self.ds):
@@ -718,8 +1001,7 @@ class CSIDataModule(l.LightningDataModule):
             local_valid_idxs = np.where(mask)[0]
             self.bs_coords[bs_id]['channels'] = base_station.channels[self.valid_idxs_all]
             self.bs_coords[bs_id]['valid_idxs'] = local_valid_idxs
-
-            assert len(local_valid_idxs) == self.bs_coords[bs_id]['coverage_points']
+            self.bs_coords[bs_id]['coverage_points'] = len(local_valid_idxs)
 
         # ---------------------------------------------------------------
         #                Compute dataset split sizes
@@ -734,23 +1016,31 @@ class CSIDataModule(l.LightningDataModule):
         # ---------------------------------------------------------------
 
         # Training dataset
+        self.rng = np.random.default_rng(self.cfg['train_seed'])
         (
             self.train_local_dataset,
             self.train_shared_dataset,
             self.train_traj_dict,
+            self.train_traj_seqs,
         ) = self._shared_gen(train_num_users)
 
         # Test dataset
+        self.rng = np.random.default_rng(self.cfg['test_seed'])
         (
             self.test_local_dataset,
             self.test_shared_dataset,
             self.test_traj_dict,
+            self.test_traj_seqs,
         ) = self._shared_gen(test_num_users)
 
         # Validation dataset
-        self.val_local_dataset, self.val_shared_dataset, self.val_traj_dict = self._shared_gen(
-            val_num_users
-        )
+        self.rng = np.random.default_rng(self.cfg['val_seed'])
+        (
+            self.val_local_dataset,
+            self.val_shared_dataset,
+            self.val_traj_dict,
+            self.val_traj_seqs,
+        ) = self._shared_gen(val_num_users)
 
         sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs_all[0]])
         self.feature_dim = csi_to_realvec(sample_ch).shape[0]
@@ -921,6 +1211,8 @@ class CSIDataModule(l.LightningDataModule):
         stage: str = 'train',
         plot_name: str | None = None,
         show_map: bool = True,
+        n_clusters: int | None = None,
+        sequential_shading: bool = False,
     ) -> None:
         """
         Plot the first n trajectories from a stage dataset over BS coverage.
@@ -938,24 +1230,29 @@ class CSIDataModule(l.LightningDataModule):
             If True (default), render the DeepMIMO scenario map (buildings,
             terrain, etc.) as a 2D background layer.  Falls back gracefully
             when the scene is unavailable.
+        n_clusters : int | None
+            If provided, cluster all trajectory points with k-means using this
+            many clusters and color each point by its cluster label instead of
+            by trajectory.  Default is None (color by trajectory).
+        sequential_shading : bool
+            If True, color each trajectory's points from light (start of path)
+            to dark (end of path), showing travel direction.  Ignored when
+            n_clusters is set.  Default is False.
         """
         assert stage in ('train', 'val', 'test'), "stage must be one of 'train', 'val', 'test'"
 
-        # Use the unfiltered union-wide trajectory dict for this stage
-        idx_to_neg_pos = {
-            'train': self.train_traj_dict,
-            'val': self.val_traj_dict,
-            'test': self.test_traj_dict,
+        # Use the full ordered trajectory sequences (not the deduplicated traj_dict,
+        # which loses revisited positions and causes apparent jumps on long trajectories)
+        traj_seqs = {
+            'train': self.train_traj_seqs,
+            'val': self.val_traj_seqs,
+            'test': self.test_traj_seqs,
         }[stage]
 
-        # Group rx indices per user, preserving trajectory insertion order
-        user_points: dict[int, list[int]] = defaultdict(list)
-        for user_id, rx_idx in idx_to_neg_pos.items():
-            user_points[user_id].append(rx_idx)
-
-        # Take the first n users (in insertion order)
-        selected_users = list(user_points.keys())[:n]
+        selected_users = sorted(traj_seqs.keys())[:n]
         actual_n = len(selected_users)
+        # user_points[uid] = full ordered rx_idx sequence for that user
+        user_points: dict[int, np.ndarray] = {uid: traj_seqs[uid] for uid in selected_users}
 
         # --- Figure setup ---
         rx_xy = self.rx_pos_all[:, :2]
@@ -1028,33 +1325,109 @@ class CSIDataModule(l.LightningDataModule):
             )
             legend_handles.append(handle)
 
-        # Assign a distinct color to each trajectory
+        # --- Optional k-means cluster coloring ---
+        cluster_labels: np.ndarray | None = None
+        if n_clusters is not None:
+            from sklearn.cluster import KMeans
+
+            all_rx_idxs = [rx for uid in selected_users for rx in user_points[uid]]
+            all_positions = self.rx_pos_all_masked[all_rx_idxs]
+            km = KMeans(n_clusters=n_clusters, random_state=0, n_init='auto')
+            flat_labels = km.fit_predict(all_positions)
+            # Split labels back per user
+            cluster_labels = {}
+            offset = 0
+            for uid in selected_users:
+                length = len(user_points[uid])
+                cluster_labels[uid] = flat_labels[offset : offset + length]
+                offset += length
+
+        cluster_cmap = plt.colormaps['tab10']
         traj_colors = [plt.colormaps['hsv'](i / max(actual_n, 1)) for i in range(actual_n)]
 
         for i, user_id in enumerate(selected_users):
-            # rx_idxs are already in trajectory order (insertion order kept)
             rx_idxs = user_points[user_id]
-            positions = self.rx_pos_all[rx_idxs, :2]
-            color = traj_colors[i]
+            positions = self.rx_pos_all_masked[rx_idxs]
 
-            (handle,) = ax.plot(
-                positions[:, 0],
-                positions[:, 1],
-                '-o',
-                color=color,
-                markersize=3,
-                linewidth=1.5,
-                label=f'Traj {user_id}',
-                alpha=0.85,
-                zorder=4,
-            )
-            legend_handles.append(handle)
+            if cluster_labels is not None:
+                # Draw the connecting line in neutral grey, then scatter points
+                # coloured by cluster
+                point_colors = [
+                    cluster_cmap(lbl / max(n_clusters - 1, 1)) for lbl in cluster_labels[user_id]
+                ]
+                for j in range(len(positions) - 1):
+                    ax.plot(
+                        positions[j : j + 2, 0],
+                        positions[j : j + 2, 1],
+                        '-',
+                        color=point_colors[j],
+                        linewidth=1.2,
+                        alpha=0.9,
+                        zorder=3,
+                    )
+                ax.scatter(
+                    positions[:, 0],
+                    positions[:, 1],
+                    c=point_colors,
+                    s=10,
+                    linewidths=0,
+                    alpha=0.85,
+                    zorder=4,
+                )
+            else:
+                color = traj_colors[i]
+                if sequential_shading:
+                    from matplotlib.collections import LineCollection
+
+                    r, g, b, _ = color
+                    n_pts = len(positions)
+                    t_vals = np.linspace(0, 1, n_pts)
+                    # light (white blend) → dark (full colour)
+                    pt_colors = [
+                        (1.0 - t * (1.0 - r), 1.0 - t * (1.0 - g), 1.0 - t * (1.0 - b), 0.85)
+                        for t in t_vals
+                    ]
+                    segments = [positions[j : j + 2] for j in range(n_pts - 1)]
+                    seg_colors = [pt_colors[j] for j in range(n_pts - 1)]
+                    lc = LineCollection(segments, colors=seg_colors, linewidth=1.5, zorder=4)
+                    ax.add_collection(lc)
+                    ax.scatter(
+                        positions[:, 0],
+                        positions[:, 1],
+                        c=pt_colors,
+                        s=9,
+                        linewidths=0,
+                        zorder=4,
+                    )
+                    handle = ax.scatter([], [], color=color, label=f'Traj {user_id}', s=30)
+                    legend_handles.append(handle)
+                else:
+                    (handle,) = ax.plot(
+                        positions[:, 0],
+                        positions[:, 1],
+                        '-o',
+                        color=color,
+                        markersize=3,
+                        linewidth=1.5,
+                        label=f'Traj {user_id}',
+                        alpha=0.85,
+                        zorder=4,
+                    )
+                    legend_handles.append(handle)
+
             # Mark trajectory start
+            if cluster_labels is not None:
+                start_color = cluster_cmap(int(cluster_labels[user_id][0]) / max(n_clusters - 1, 1))
+            elif sequential_shading:
+                r, g, b, _ = traj_colors[i]
+                start_color = (1.0, 1.0, 1.0, 0.85)  # lightest (t=0)
+            else:
+                start_color = traj_colors[i]
             ax.scatter(
                 positions[0, 0],
                 positions[0, 1],
                 s=60,
-                color=color,
+                color=start_color,
                 edgecolor='black',
                 linewidth=0.6,
                 zorder=6,
@@ -1064,9 +1437,9 @@ class CSIDataModule(l.LightningDataModule):
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
         ax.set_aspect('equal')
-        ax.set_xlabel('x [m]')
-        ax.set_ylabel('y [m]')
-        ax.set_title(f'First {actual_n} trajectories — {stage} stage')
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        # ax.set_title(f'First {actual_n} trajectories — {stage} stage')
         # Use only our handles so scene labels (terrain, buildings) excluded
         ax.legend(handles=legend_handles, loc='upper right', fontsize=7, ncol=2)
         plt.tight_layout()
@@ -1074,7 +1447,7 @@ class CSIDataModule(l.LightningDataModule):
         plot_name = (
             f'{self.cfg["scenario"]}_{stage}_trajectories.png' if plot_name is None else plot_name
         )
-        plt.savefig(plot_name, dpi=300)
+        plt.savefig(Path(f'imgs/{plot_name}'), dpi=300)
         plt.close()
 
         print(f'Trajectory plot saved to: {plot_name}')
