@@ -12,8 +12,8 @@ heading_momentum: 0.7
 train_num_users: 1
 val_num_users: 1
 coverage_area: 0.6
-T_min: 3e3
-T_max: 4e3
+T_min: 6e3
+T_max: 7e3
 in_window: 5
 out_window: 20
 n_pos: 1

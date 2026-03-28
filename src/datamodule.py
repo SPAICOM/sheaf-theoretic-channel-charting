@@ -417,33 +417,19 @@ class CSIDataModule(l.LightningDataModule):
             covering all feasible points exactly once.
         """
 
-        coords = self.rx_pos_all_masked
-        N = len(coords)
-
+        N = len(self.rx_pos_all_masked)
         visited = np.zeros(N, dtype=bool)
         traj = np.empty(N, dtype=np.int64)
-
-        # random start
         current = int(self.rng.integers(0, N))
 
         for t in range(N):
             traj[t] = current
             visited[current] = True
-
             if t == N - 1:
                 break
-
-            # query several nearest neighbors
-            _, neigh = self.kdtree.query(coords[current], k=20)
-
-            # filter unvisited
-            candidates = [n for n in neigh if not visited[n]]
-
-            if len(candidates) == 0:
-                # fallback: pick random unvisited
-                candidates = np.where(~visited)[0]
-
-            # choose randomly among nearest
+            candidates = [n for n in self.neighbor_graph[current] if not visited[n]]
+            if not candidates:
+                candidates = list(np.where(~visited)[0])
             current = int(self.rng.choice(candidates))
 
         return traj
@@ -452,11 +438,10 @@ class CSIDataModule(l.LightningDataModule):
         self,
         current: int,
         heading: np.ndarray | None,
-        k: int = 20,
         bias: float = 4.0,
     ) -> tuple[int, np.ndarray | None]:
         """
-        Take one step in the neighbor graph, optionally biased toward heading.
+        Take one step on the prebuilt neighbor graph, optionally biased toward heading.
 
         Parameters
         ----------
@@ -465,8 +450,6 @@ class CSIDataModule(l.LightningDataModule):
         heading : np.ndarray | None
             Unit vector (2,) for directional bias.
             If None, the next neighbor is chosen uniformly at random.
-        k : int
-            Number of nearest neighbors to consider.
         bias : float
             Sharpness of the directional bias (higher → more collinear).
 
@@ -475,83 +458,26 @@ class CSIDataModule(l.LightningDataModule):
         next_local : int
             Local index of the chosen next position.
         new_heading : np.ndarray | None
-            Updated heading unit vector (tracks actual movement direction).
-            Returns None if input heading was None.
+            Updated heading unit vector. Returns None if heading was None.
         """
-        k_actual = min(k + 1, len(self.rx_pos_all_masked))
-        p1 = self.rx_pos_all_masked[current]
-        _, neigh = self.kdtree.query(p1, k=k_actual)
-        neigh = neigh[neigh != current]
-        n_candidates = len(neigh)
-
-        # Drop neighbors that can only be reached by crossing a building
-        frac_blocked = 0.0
-        if self.building_hull_equations:
-            blocked = self._segments_cross_buildings(p1, self.rx_pos_all_masked[neigh])
-            neigh = neigh[~blocked]
-            frac_blocked = (n_candidates - len(neigh)) / max(n_candidates, 1)
-            if len(neigh) == 0:
-                # Widen search, but cap at max_step_dist to avoid far jumps
-                max_step_dist = self.typical_step_dist * float(
-                    self.cfg.get('max_step_multiplier', 10)
-                )
-                for k_wide in (k * 2, k * 4, k * 8, len(self.rx_pos_all_masked)):
-                    k_wide = min(k_wide, len(self.rx_pos_all_masked))
-                    dists_wide, neigh = self.kdtree.query(p1, k=k_wide)
-                    neigh = neigh[neigh != current]
-                    # Drop candidates beyond the max step distance
-                    close_mask = dists_wide[dists_wide > 0] <= max_step_dist
-                    neigh = neigh[:len(close_mask)][close_mask]
-                    if len(neigh) == 0:
-                        continue
-                    blocked = self._segments_cross_buildings(p1, self.rx_pos_all_masked[neigh])
-                    neigh = neigh[~blocked]
-                    if len(neigh) > 0:
-                        break
+        neigh = self.neighbor_graph[current]
+        if len(neigh) == 0:
+            return current, heading  # isolated node — stay put
 
         if heading is None:
             return int(self.rng.choice(neigh)), None
 
-        # Escape mode: force heading toward feasible centroid, ignore momentum
-        if self._escape_steps > 0:
-            self._escape_steps -= 1
-            to_center = self.feasible_centroid - p1
-            norm_tc = np.linalg.norm(to_center)
-            heading = to_center / norm_tc if norm_tc > 1e-8 else heading
-
-        # Boundary detection: very few unblocked neighbors → steer toward feasible centroid
-        boundary_threshold = self.cfg.get('boundary_threshold', 3)
-        if len(neigh) <= boundary_threshold:
-            to_center = self.feasible_centroid - p1
-            norm_tc = np.linalg.norm(to_center)
-            new_heading = to_center / norm_tc if norm_tc > 1e-8 else np.array([1.0, 0.0])
-            diffs_b = self.rx_pos_all_masked[neigh] - p1
-            norms_b = np.linalg.norm(diffs_b, axis=1, keepdims=True) + 1e-8
-            best = neigh[int(np.argmax((diffs_b / norms_b) @ new_heading))]
-            return int(best), new_heading
-
+        p1 = self.rx_pos_all_masked[current]
         diffs = self.rx_pos_all_masked[neigh] - p1
         norms = np.linalg.norm(diffs, axis=1, keepdims=True) + 1e-8
         cosines = (diffs / norms) @ heading
         probs = np.exp(bias * cosines)
         probs /= probs.sum()
-
         chosen = int(self.rng.choice(neigh, p=probs))
-
-        # Adaptive momentum: reduce when escaping or when many neighbors are blocked
-        momentum = self.cfg.get('heading_momentum', 0.0)
-        effective_momentum = 0.0 if self._escape_steps > 0 else momentum * max(0.0, 1.0 - frac_blocked)
 
         new_dir = self.rx_pos_all_masked[chosen] - p1
         norm = np.linalg.norm(new_dir)
-        if norm > 1e-8:
-            actual_dir = new_dir / norm
-            blended = effective_momentum * heading + (1.0 - effective_momentum) * actual_dir
-            blended_norm = np.linalg.norm(blended)
-            new_heading = blended / blended_norm if blended_norm > 1e-8 else heading
-        else:
-            new_heading = heading
-
+        new_heading = new_dir / norm if norm > 1e-8 else heading
         return chosen, new_heading
 
     # ----------------- Trajectory generators -----------------
@@ -644,7 +570,6 @@ class CSIDataModule(l.LightningDataModule):
                                 [np.cos(ang_to_center), np.sin(ang_to_center)]
                             )
                             direction = float(self.rng.choice([-1.0, 1.0]))
-                            self._escape_steps = int(self.cfg.get('escape_steps', 50))
                     radius_vec = self.rx_pos_all_masked[current] - center
                     norm = np.linalg.norm(radius_vec)
                     if norm < 1e-8:
@@ -697,8 +622,9 @@ class CSIDataModule(l.LightningDataModule):
                     stuck_buf[t % self._stuck_interval] = self.rx_pos_all_masked[current]
                     if t > 0 and t % self._stuck_interval == 0:
                         if stuck_buf.std(axis=0).max() < self._stuck_threshold:
-                            # Stuck: force escape toward centroid for N steps (no teleport)
-                            self._escape_steps = int(self.cfg.get('escape_steps', 50))
+                            # Stuck: pick a fresh random heading
+                            ang = float(self.rng.uniform(0, 2 * np.pi))
+                            heading = np.array([np.cos(ang), np.sin(ang)])
                     current, heading = self._neighbor_step(current, heading)
                 return traj
 
@@ -725,7 +651,8 @@ class CSIDataModule(l.LightningDataModule):
                         stuck_buf[t_global % self._stuck_interval] = self.rx_pos_all_masked[current]
                         if t_global > 0 and t_global % self._stuck_interval == 0:
                             if stuck_buf.std(axis=0).max() < self._stuck_threshold:
-                                self._escape_steps = int(self.cfg.get('escape_steps', 50))
+                                ang = float(self.rng.uniform(0, 2 * np.pi))
+                                heading = np.array([np.cos(ang), np.sin(ang)])
                         current, heading = self._neighbor_step(current, heading)
                     offset += length
                 return traj
@@ -757,6 +684,8 @@ class CSIDataModule(l.LightningDataModule):
 
     def _shared_gen(self, num_users) -> tuple[dict[Any, Any], dict[Any, Any], dict[Any, Any]]:
         self.idx_to_neg_pos = {}
+        # user_id → full ordered trajectory (for plotting)
+        self._traj_sequences: dict[int, np.ndarray] = {}
         for user_id in range(num_users):
             # Random trajectory length
             T_requested = int(self.rng.integers(self.T_min, self.T_max + 1))
@@ -770,6 +699,7 @@ class CSIDataModule(l.LightningDataModule):
 
             # Generate trajectory of RX indices
             rx_idxs = self._generate_one(kind, T_requested)
+            self._traj_sequences[user_id] = rx_idxs
             T_actual = len(rx_idxs)
 
             for t in range(T_actual):
@@ -858,7 +788,7 @@ class CSIDataModule(l.LightningDataModule):
                 shared_traj_idxs=shared_traj_idxs,
             )
 
-        return local_datasets, shared_datasets, self.idx_to_neg_pos.copy()
+        return local_datasets, shared_datasets, self.idx_to_neg_pos.copy(), self._traj_sequences.copy()
 
     def setup(
         self,
@@ -1008,10 +938,28 @@ class CSIDataModule(l.LightningDataModule):
         # Typical inter-point distance (median 1st-neighbor distance), used for stuck detection
         _sample = self.rx_pos_all_masked[:min(500, len(self.rx_pos_all_masked))]
         self.typical_step_dist = float(np.median(self.kdtree.query(_sample, k=2)[0][:, 1]))
-        # Stuck detector: check every N steps; trigger heading escape if spatial std < threshold
+        # Stuck detector: check every N steps; restart heading if spatial std < threshold
         self._stuck_interval = int(self.cfg.get('stuck_check_interval', 200))
         self._stuck_threshold = self.typical_step_dist * float(self.cfg.get('stuck_threshold_steps', 8))
-        self._escape_steps = 0  # remaining steps of forced centroid-heading escape
+
+        # Build 1-hop neighbor graph once: edges connect points within max_step_dist
+        # that are not separated by a building.  Used by all trajectory generators.
+        _max_step_dist = self.typical_step_dist * float(self.cfg.get('max_step_multiplier', 1.5))
+        _N = len(self.rx_pos_all_masked)
+        from collections import defaultdict as _dd
+        _adj: dict[int, list[int]] = _dd(list)
+        for _i, _j in self.kdtree.query_pairs(_max_step_dist):
+            _adj[_i].append(_j)
+            _adj[_j].append(_i)
+        self.neighbor_graph: list[np.ndarray] = []
+        for _i in range(_N):
+            _nbrs = np.array(_adj[_i], dtype=np.int64)
+            if len(_nbrs) > 0 and self.building_hull_equations:
+                _blocked = self._segments_cross_buildings(
+                    self.rx_pos_all_masked[_i], self.rx_pos_all_masked[_nbrs]
+                )
+                _nbrs = _nbrs[~_blocked]
+            self.neighbor_graph.append(_nbrs)
 
         # Valid idxs for each BS in the self.rx_pos_all
         for bs_id, base_station in enumerate(self.ds):
@@ -1044,6 +992,7 @@ class CSIDataModule(l.LightningDataModule):
             self.train_local_dataset,
             self.train_shared_dataset,
             self.train_traj_dict,
+            self.train_traj_seqs,
         ) = self._shared_gen(train_num_users)
 
         # Test dataset
@@ -1052,13 +1001,17 @@ class CSIDataModule(l.LightningDataModule):
             self.test_local_dataset,
             self.test_shared_dataset,
             self.test_traj_dict,
+            self.test_traj_seqs,
         ) = self._shared_gen(test_num_users)
 
         # Validation dataset
         self.rng = np.random.default_rng(self.cfg['val_seed'])
-        self.val_local_dataset, self.val_shared_dataset, self.val_traj_dict = self._shared_gen(
-            val_num_users
-        )
+        (
+            self.val_local_dataset,
+            self.val_shared_dataset,
+            self.val_traj_dict,
+            self.val_traj_seqs,
+        ) = self._shared_gen(val_num_users)
 
         sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs_all[0]])
         self.feature_dim = csi_to_realvec(sample_ch).shape[0]
@@ -1230,6 +1183,7 @@ class CSIDataModule(l.LightningDataModule):
         plot_name: str | None = None,
         show_map: bool = True,
         n_clusters: int | None = None,
+        sequential_shading: bool = False,
     ) -> None:
         """
         Plot the first n trajectories from a stage dataset over BS coverage.
@@ -1251,24 +1205,25 @@ class CSIDataModule(l.LightningDataModule):
             If provided, cluster all trajectory points with k-means using this
             many clusters and color each point by its cluster label instead of
             by trajectory.  Default is None (color by trajectory).
+        sequential_shading : bool
+            If True, color each trajectory's points from light (start of path)
+            to dark (end of path), showing travel direction.  Ignored when
+            n_clusters is set.  Default is False.
         """
         assert stage in ('train', 'val', 'test'), "stage must be one of 'train', 'val', 'test'"
 
-        # Use the unfiltered union-wide trajectory dict for this stage
-        idx_to_neg_pos = {
-            'train': self.train_traj_dict,
-            'val': self.val_traj_dict,
-            'test': self.test_traj_dict,
+        # Use the full ordered trajectory sequences (not the deduplicated traj_dict,
+        # which loses revisited positions and causes apparent jumps on long trajectories)
+        traj_seqs = {
+            'train': self.train_traj_seqs,
+            'val': self.val_traj_seqs,
+            'test': self.test_traj_seqs,
         }[stage]
 
-        # Group rx indices per user, preserving trajectory insertion order
-        user_points: dict[int, list[int]] = defaultdict(list)
-        for (user_id, anchor_rx), _ in idx_to_neg_pos.items():
-            user_points[user_id].append(anchor_rx)
-
-        # Take the first n users (in insertion order)
-        selected_users = list(user_points.keys())[:n]
+        selected_users = sorted(traj_seqs.keys())[:n]
         actual_n = len(selected_users)
+        # user_points[uid] = full ordered rx_idx sequence for that user
+        user_points: dict[int, np.ndarray] = {uid: traj_seqs[uid] for uid in selected_users}
 
         # --- Figure setup ---
         rx_xy = self.rx_pos_all[:, :2]
@@ -1391,22 +1346,53 @@ class CSIDataModule(l.LightningDataModule):
                 )
             else:
                 color = traj_colors[i]
-                (handle,) = ax.plot(
-                    positions[:, 0],
-                    positions[:, 1],
-                    '-o',
-                    color=color,
-                    markersize=3,
-                    linewidth=1.5,
-                    label=f'Traj {user_id}',
-                    alpha=0.85,
-                    zorder=4,
-                )
-                legend_handles.append(handle)
+                if sequential_shading:
+                    from matplotlib.collections import LineCollection
+
+                    r, g, b, _ = color
+                    n_pts = len(positions)
+                    t_vals = np.linspace(0, 1, n_pts)
+                    # light (white blend) → dark (full colour)
+                    pt_colors = [
+                        (1.0 - t * (1.0 - r), 1.0 - t * (1.0 - g), 1.0 - t * (1.0 - b), 0.85)
+                        for t in t_vals
+                    ]
+                    segments = [positions[j : j + 2] for j in range(n_pts - 1)]
+                    seg_colors = [pt_colors[j] for j in range(n_pts - 1)]
+                    lc = LineCollection(segments, colors=seg_colors, linewidth=1.5, zorder=4)
+                    ax.add_collection(lc)
+                    ax.scatter(
+                        positions[:, 0],
+                        positions[:, 1],
+                        c=pt_colors,
+                        s=9,
+                        linewidths=0,
+                        zorder=4,
+                    )
+                    handle = ax.scatter([], [], color=color, label=f'Traj {user_id}', s=30)
+                    legend_handles.append(handle)
+                else:
+                    (handle,) = ax.plot(
+                        positions[:, 0],
+                        positions[:, 1],
+                        '-o',
+                        color=color,
+                        markersize=3,
+                        linewidth=1.5,
+                        label=f'Traj {user_id}',
+                        alpha=0.85,
+                        zorder=4,
+                    )
+                    legend_handles.append(handle)
 
             # Mark trajectory start
-            start_color = (cluster_cmap(int(cluster_labels[user_id][0]) / max(n_clusters - 1, 1))
-                           if cluster_labels is not None else traj_colors[i])
+            if cluster_labels is not None:
+                start_color = cluster_cmap(int(cluster_labels[user_id][0]) / max(n_clusters - 1, 1))
+            elif sequential_shading:
+                r, g, b, _ = traj_colors[i]
+                start_color = (1.0, 1.0, 1.0, 0.85)  # lightest (t=0)
+            else:
+                start_color = traj_colors[i]
             ax.scatter(
                 positions[0, 0],
                 positions[0, 1],

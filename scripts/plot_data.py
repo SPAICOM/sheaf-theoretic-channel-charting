@@ -28,7 +28,7 @@ def main(cfg: DictConfig):
     dm.setup('fit')
 
     # dm.train_dataloader()
-    dm.plot_trajectories(n=1, n_clusters=4)
+    dm.plot_trajectories(n=1, n_clusters=4, sequential_shading=True)
 
     return None
 
