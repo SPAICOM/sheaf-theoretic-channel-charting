@@ -1,4 +1,4 @@
-scenario: city_3_houston_3p5
+scenario: city_14_charlotte_3p5
 download: true
 
 batch_size: 16
@@ -6,14 +6,12 @@ num_workers: 0
 pin_memory: true
 
 exclude_buildings: true
-inscribed_ellipse: true
 trajectory_kind: neighbor_linear
-heading_momentum: 0.7
 train_num_users: 1
 val_num_users: 1
 coverage_area: 0.6
-T_min: 3e3
-T_max: 4e3
+T_min: 1e4
+T_max: 10001
 in_window: 5
 out_window: 20
 n_pos: 1
