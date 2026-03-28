@@ -78,6 +78,11 @@ class Encoder(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
+        """Initialize weights using Xavier uniform initialization.
+
+        Applies Xavier uniform initialization to all linear layer weights
+        and zeros to all biases.
+        """
         for layer in self.linear_layers:
             nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)
@@ -183,6 +188,11 @@ class Decoder(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
+        """Initialize weights using Xavier uniform initialization.
+
+        Applies Xavier uniform initialization to all linear layer weights
+        and zeros to all biases.
+        """
         for layer in self.layers:
             nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)

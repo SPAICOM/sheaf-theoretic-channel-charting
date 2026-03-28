@@ -20,15 +20,19 @@ Subclasses must implement the following abstract methods:
 ...     def on_train_epoch_end(self): ...
 """
 
+import math
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 import lightning as l
+import matplotlib.pyplot as plt
 import scipy
 import torch
 import torch.nn as nn
 from scipy.spatial import KDTree
+from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 
 
@@ -76,6 +80,8 @@ class BaseOrchestrator(l.LightningModule, ABC):
         neighbors: dict[int, set[int]],
         lr: float,
         weight_decay: float = 0.0,
+        transition_epoch: float | None = None,
+        steepness: float = 0.1,
     ) -> None:
         super().__init__()
         # Save hyperparameters but exclude agent modules (they're tracked separately)
@@ -308,40 +314,103 @@ class BaseOrchestrator(l.LightningModule, ABC):
         )
         return {'optimizer': optimizer}
 
+    def _compute_alpha(self, epoch: int) -> float:
+        """Compute alpha using sigmoid function.
+
+        Alpha controls the balance between reconstruction loss and triplet loss:
+        loss = (1 - alpha) * rec_loss + alpha * triplet_loss
+
+        Parameters
+        ----------
+        epoch : int
+            Current training epoch.
+
+        Returns
+        -------
+        float
+            Alpha value between 0 and 1.
+        """
+        if self.hparams.transition_epoch is None:
+            transition_point = self.trainer.max_epochs / 2
+        else:
+            transition_point = self.hparams.transition_epoch
+
+        steepness = self.hparams.steepness
+        return 1 / (1 + math.exp(-steepness * (epoch - transition_point)))
+
     # -------------------------------------------------------
     #     Methods for dimensionality reduction evaluation
     # -------------------------------------------------------
 
     @torch.no_grad()
-    def build_test_trajectory(self, agent_idx: int):
-        test_local_loader = DataLoader(
-            self.trainer.datamodule.test_local_dataset[int(agent_idx)], batch_size=64, shuffle=False
+    def build_trajectory(self, agent_idx: int, split: str = 'test'):
+        """Build trajectory embeddings for train or test split.
+
+        Parameters
+        ----------
+        agent_idx : int
+            Agent index
+        split : str
+            Dataset split, either 'train' or 'test' (default: 'test')
+        """
+        dataset = (
+            self.trainer.datamodule.train_local_dataset
+            if split == 'train'
+            else self.trainer.datamodule.test_local_dataset
         )
-        agent = self.agents[agent_idx]
 
-        test_embs = []
-        pos = []
+        loader = DataLoader(dataset[agent_idx], batch_size=64, shuffle=False)
+        agent = self.agents[str(agent_idx)]
 
-        for batch in test_local_loader:
-            test_embs.append(agent(batch)[0])
-            pos.append(batch[-1])
+        embs_list = []
+        pos_list = []
 
-        embs = torch.cat(test_embs, dim=0)
-        pos = torch.cat(pos, dim=0)
+        for batch in loader:
+            batch = [b.to(self.device) for b in batch]
+            embs_list.append(agent(batch)[0])
+            pos_list.append(batch[-1])
 
-        embs_KDTree = KDTree(embs)
-        pos_KDTree = KDTree(pos)
+        embs = torch.cat(embs_list, dim=0)
+        pos = torch.cat(pos_list, dim=0)
+
+        embs_KDTree = KDTree(embs.cpu())
+        pos_KDTree = KDTree(pos.cpu())
 
         return embs, pos, embs_KDTree, pos_KDTree
 
+    def build_test_trajectory(self, agent_idx: int):
+        """Backward compatibility alias for build_trajectory with split='test'."""
+        return self.build_trajectory(agent_idx=agent_idx, split='test')
+
     def compute_continuity(
         self,
-        embs: torch.tensor,
-        pos: torch.tensor,
-        # embs_KDTree: scipy.spatial.KDTree,
+        embs: torch.Tensor,
+        pos: torch.Tensor,
         pos_KDTree: scipy.spatial.KDTree,
         K: int,
-    ) -> None:
+    ) -> torch.Tensor:
+        """Compute continuity metric.
+
+        Continuity measures how well the local neighborhood structure
+        of the original high-dimensional space is preserved in the
+        embedding space.
+
+        Parameters
+        ----------
+        embs : torch.Tensor
+            Embeddings of shape (N, d).
+        pos : torch.Tensor
+            Original positions of shape (N, 2).
+        pos_KDTree : scipy.spatial.KDTree
+            KDTree built from original positions.
+        K : int
+            Number of nearest neighbors to consider.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean continuity score across all points.
+        """
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
 
@@ -365,12 +434,32 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
     def compute_trustworthiness(
         self,
-        embs: torch.tensor,
-        pos: torch.tensor,
+        embs: torch.Tensor,
+        pos: torch.Tensor,
         embs_KDTree: scipy.spatial.KDTree,
-        # pos_KDTree: scipy.spatial.KDTree,
         K: int,
-    ) -> None:
+    ) -> torch.Tensor:
+        """Compute trustworthiness metric.
+
+        Trustworthiness measures how well the local neighborhood structure
+        of the embedding space reflects the original high-dimensional space.
+
+        Parameters
+        ----------
+        embs : torch.Tensor
+            Embeddings of shape (N, d).
+        pos : torch.Tensor
+            Original positions of shape (N, 2).
+        embs_KDTree : scipy.spatial.KDTree
+            KDTree built from embeddings.
+        K : int
+            Number of nearest neighbors to consider.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean trustworthiness score across all points.
+        """
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
 
@@ -392,7 +481,28 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
         return torch.mean(TW)
 
-    def compute_kruskal_stress(self, embs: torch.tensor, pos: torch.tensor) -> None:
+    def compute_kruskal_stress(
+        self,
+        embs: torch.Tensor,
+        pos: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute Kruskal stress metric.
+
+        Kruskal stress measures the goodness of fit between distances
+        in the original space and the embedding space using least squares.
+
+        Parameters
+        ----------
+        embs : torch.Tensor
+            Embeddings of shape (N, d).
+        pos : torch.Tensor
+            Original positions of shape (N, 2).
+
+        Returns
+        -------
+        torch.Tensor
+            Kruskal stress value.
+        """
         # Distance in the original space
         DD = (pos**2).sum(dim=1, keepdim=True)  # (N, 1)
         D = DD + DD.T - 2 * (pos @ pos.T)
@@ -418,11 +528,37 @@ class BaseOrchestrator(l.LightningModule, ABC):
     def _compute_FOSCTTM(self) -> None:
         pass
 
-    def eval_all(self, K_max: int, K_min: int = 2, step: int = 1):
+    def eval_all(
+        self,
+        K_max: int,
+        K_min: int = 2,
+        step: int = 1,
+    ) -> dict[str, Any]:
+        """Evaluate all metrics on the test set.
+
+        Computes continuity, trustworthiness, Kruskal stress, and FOSCTTM
+        metrics across all agents.
+
+        Parameters
+        ----------
+        K_max : int
+            Maximum number of nearest neighbors to consider.
+        K_min : int, optional
+            Minimum number of nearest neighbors to consider. Default is 2.
+        step : int, optional
+            Step size for iterating through K values. Default is 1.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary containing all computed metrics.
+        """
         # Results
         res = {'KS': [], 'CT': defaultdict(list), 'TW': defaultdict(list)}
-        for agent in self.agents:
-            embs, pos, embs_KDTree, pos_KDTree = self.build_test_trajectory(agent_idx=agent)
+        for agent_idx in self.agents:
+            embs, pos, embs_KDTree, pos_KDTree = self.build_test_trajectory(
+                agent_idx=int(agent_idx)
+            )
             res['KS'].append(self.compute_kruskal_stress(embs=embs, pos=pos))
             for K in range(K_min, K_max + 1, step):
                 res['CT'][K].append(
@@ -445,6 +581,73 @@ class BaseOrchestrator(l.LightningModule, ABC):
         self.logger.experiment.log(wandb_log)
 
         return res
+
+    @torch.no_grad()
+    def plot_latent_space(
+        self,
+        output_dir: Path = Path('img'),
+        n_clusters: int = 4,
+        use_clusters: bool = True,
+        split: str = 'test',
+        prefix: str = 'trajectory',
+    ) -> None:
+        for agent_idx in self.agents:
+            agent = self.agents[agent_idx]
+            if agent.out_dim != 2:
+                continue
+            embs, pos, _, _ = self.build_trajectory(agent_idx=int(agent_idx), split=split)
+            embs = embs.cpu()
+            pos = pos.cpu()
+
+            # Cluster positions into n_clusters clusters (if enabled)
+            if use_clusters and n_clusters > 0:
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                cluster_labels = kmeans.fit_predict(pos.numpy())
+                color = cluster_labels
+                cmap = 'tab10'
+            else:
+                color = None
+                cmap = 'viridis'
+
+            output_dir.mkdir(exist_ok=True, parents=True)
+
+            fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+
+            # Left: Original trajectory (position space)
+            color_val = color if color is not None else range(len(pos))
+            axes[0].scatter(
+                pos[:, 0].numpy(),
+                pos[:, 1].numpy(),
+                s=10,
+                alpha=0.7,
+                c=color_val,
+                cmap=cmap,
+            )
+            axes[0].set_title(f'Agent {agent_idx} Original Trajectory')
+            axes[0].set_xlabel('X Position')
+            axes[0].set_ylabel('Y Position')
+            axes[0].set_aspect('equal', 'box')
+
+            # Right: Latent space trajectory
+            axes[1].scatter(
+                embs[:, 0].numpy(),
+                embs[:, 1].numpy(),
+                s=10,
+                alpha=0.7,
+                c=color_val,
+                cmap=cmap,
+            )
+            axes[1].set_title(f'Agent {agent_idx} Latent Space')
+            axes[1].set_xlabel('Dim 1')
+            axes[1].set_ylabel('Dim 2')
+            axes[1].set_aspect('equal', 'box')
+
+            # Save to file
+            fig.savefig(output_dir / f'{prefix}_agent_{agent_idx}.png', dpi=300)
+
+            # Log to wandb
+            self.logger.log_image(key=f'{prefix}/agent_{agent_idx}', images=[fig])
+            plt.close(fig)
 
 
 if __name__ == '__main__':

@@ -7,3 +7,5 @@ lmb_max: 1.0
 lmb_schedule: cosine
 lr: 1e-3
 weight_decay: 1e-3
+transition_epoch: null
+steepness: 0.1

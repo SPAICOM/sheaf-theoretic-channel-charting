@@ -6,3 +6,5 @@ weight_decay: 1e-3
 lr: 1e-3
 encoder_split: 0.5
 decoder_split: 0.5
+transition_epoch: null
+steepness: 0.1

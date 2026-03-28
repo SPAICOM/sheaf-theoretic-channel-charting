@@ -70,12 +70,16 @@ class BundleCC(BaseOrchestrator):
         lmb_min: float = 1e-3,
         lmb_max: float = 1.0,
         lmb_schedule: str = 'cosine',
+        transition_epoch: float | None = None,
+        steepness: float = 0.1,
     ) -> None:
         super().__init__(
             agents=agents,
             neighbors=neighbors,
             weight_decay=weight_decay,
             lr=lr,
+            transition_epoch=transition_epoch,
+            steepness=steepness,
         )
         self._lmb = lmb_min
 
@@ -184,6 +188,9 @@ class BundleCC(BaseOrchestrator):
 
         self.orthogonal_maps = orthogonal_maps_temp
 
+        self.plot_latent_space(split='test', prefix='trajectory_test')
+        self.plot_latent_space(split='train', prefix='trajectory_train')
+
     def _shared_eval(
         self,
         batch: dict[int, list[torch.Tensor]],
@@ -244,7 +251,20 @@ class BundleCC(BaseOrchestrator):
                     prog_bar=False,
                 )
 
-            total_private_loss += sum(agent_losses.values())
+            # Compute alpha-weighted loss if reconstruction loss exists (use_decoder=True)
+            if 'rec_loss' in agent_losses:
+                alpha = self._compute_alpha(self.current_epoch)
+                for loss_name, loss_val in agent_losses.items():
+                    match loss_name:
+                        case 'rec_loss':  # Always match - weight is (1 - alpha)
+                            total_private_loss += (1 - alpha) * loss_val
+                        case 'triplet_loss':  # Weighted by alpha
+                            total_private_loss += alpha * loss_val
+                        case _:  # Other losses (e.g., alignment) - use full weight
+                            total_private_loss += loss_val
+            else:
+                # No reconstruction loss (use_decoder=False) - use full triplet loss
+                total_private_loss += sum(agent_losses.values())
 
         # Compute alignment loss between overlapping regions using orthogonal maps
         for i, j in self.hparams['edges']:

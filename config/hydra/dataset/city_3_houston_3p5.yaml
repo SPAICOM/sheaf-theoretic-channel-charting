@@ -5,9 +5,10 @@ batch_size: 16
 num_workers: 0
 pin_memory: true
 
-trajectory_kind: neighbor_linear
-train_num_users: 4
-val_num_users: 2
+trajectory_kind: circular
+train_num_users: 10
+val_num_users: 10
+test_num_users: 10
 coverage_area: 0.6
 T_min: 1e3
 T_max: 1001

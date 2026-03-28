@@ -4,3 +4,5 @@ agents: null
 neighbors: null
 weight_decay: 1e-3
 lr: 1e-3
+transition_epoch: null
+steepness: 0.1

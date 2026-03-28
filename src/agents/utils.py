@@ -62,7 +62,7 @@ class DistanceLayer(nn.Module):
                 z1 = z1.unsqueeze(1)  # (B, 1, D)
 
                 # Distance computation (batching + broadcasting)
-                dist = (z1 - z2).pow(2).sum(dim=-1).add(self.epsilon).sqrt()  # (B, K)
+                dist = torch.linalg.norm(z1 - z2, dim=-1)  # (B, K)
 
             case 'euclidean2':
                 # Anchor expansion

@@ -493,6 +493,24 @@ class CSIDataModule(l.LightningDataModule):
         return int(idxs[int(self.rng.integers(0, len(idxs)))])
 
     def _shared_gen(self, num_users) -> tuple[dict[Any, Any], dict[Any, Any], dict[Any, Any]]:
+        """Generate shared dataset for all users.
+
+        Creates triplet datasets (anchor, positive, negative samples) for
+        each user based on their trajectory data.
+
+        Parameters
+        ----------
+        num_users : int
+            Number of users to generate data for.
+
+        Returns
+        -------
+        tuple[dict[Any, Any], dict[Any, Any], dict[Any, Any]]
+            Tuple containing:
+            - Dictionary mapping user IDs to anchor data
+            - Dictionary mapping user IDs to positive data
+            - Dictionary mapping user IDs to negative data
+        """
         self.idx_to_neg_pos = {}
         for user_id in range(num_users):
             # Random trajectory length
