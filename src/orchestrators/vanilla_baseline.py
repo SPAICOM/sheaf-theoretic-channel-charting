@@ -160,8 +160,8 @@ class VanillaCC(BaseOrchestrator):
         -------
         None
         """
-        self.plot_latent_space(split='test', prefix='trajectory_test')
-        self.plot_latent_space(split='train', prefix='trajectory_train')
+        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
+        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
 
     def _compute_FOSCTTM(self) -> None:
         pass

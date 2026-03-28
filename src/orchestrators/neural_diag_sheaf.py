@@ -99,8 +99,8 @@ class NeuralDiagSheafCC(BaseOrchestrator):
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_train_epoch_end(self) -> None:
-        self.plot_latent_space(split='test', prefix='trajectory_test')
-        self.plot_latent_space(split='train', prefix='trajectory_train')
+        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
+        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
 
     def _shared_eval(
         self,

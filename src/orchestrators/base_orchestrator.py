@@ -378,10 +378,6 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
         return embs, pos, embs_KDTree, pos_KDTree
 
-    def build_test_trajectory(self, agent_idx: int):
-        """Backward compatibility alias for build_trajectory with split='test'."""
-        return self.build_trajectory(agent_idx=agent_idx, split='test')
-
     def compute_continuity(
         self,
         embs: torch.Tensor,
@@ -556,8 +552,9 @@ class BaseOrchestrator(l.LightningModule, ABC):
         # Results
         res = {'KS': [], 'CT': defaultdict(list), 'TW': defaultdict(list)}
         for agent_idx in self.agents:
-            embs, pos, embs_KDTree, pos_KDTree = self.build_test_trajectory(
-                agent_idx=int(agent_idx)
+            embs, pos, embs_KDTree, pos_KDTree = self.build_trajectory(
+                agent_idx=int(agent_idx),
+                split='test',
             )
             res['KS'].append(self.compute_kruskal_stress(embs=embs, pos=pos))
             for K in range(K_min, K_max + 1, step):
@@ -590,7 +587,11 @@ class BaseOrchestrator(l.LightningModule, ABC):
         use_clusters: bool = True,
         split: str = 'test',
         prefix: str = 'trajectory',
+        last_epoch_only: bool = False,
     ) -> None:
+        # Skip plotting if not last epoch and last_epoch_only is True
+        if last_epoch_only and self.current_epoch < self.trainer.max_epochs - 1:
+            return
         for agent_idx in self.agents:
             agent = self.agents[agent_idx]
             if agent.out_dim != 2:

@@ -26,6 +26,8 @@ def main(cfg: DictConfig):
 
     # dm.train_dataloader()
     dm.plot_trajectories(n=1, n_clusters=4, sequential_shading=True)
+    dm.plot_trajectories(n=1, n_clusters=4, sequential_shading=True, stage='test')
+    dm.plot_trajectories(n=1, n_clusters=4, sequential_shading=True, stage='val')
 
     return None
 

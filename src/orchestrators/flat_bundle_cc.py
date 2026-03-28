@@ -123,8 +123,8 @@ class FlatBundleCC(BaseOrchestrator):
         # Update local reference frames
         self.local_reference_frames = local_reference_frames_temp
 
-        self.plot_latent_space(split='test', prefix='trajectory_test')
-        self.plot_latent_space(split='train', prefix='trajectory_train')
+        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
+        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
 
     def _shared_eval(
         self,

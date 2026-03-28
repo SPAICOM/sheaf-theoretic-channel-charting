@@ -11,13 +11,13 @@ trajectory_kind: neighbor_linear
 heading_momentum: 0.7
 train_num_users: 1
 val_num_users: 1
-test_num_users: 10
+test_num_users: 1
 
 coverage_area: 0.6
-T_min: 6e3
-T_max: 7e3
+T_min: 8e3
+T_max: 9e3
 in_window: 5
-out_window: 20
+out_window: 700
 n_pos: 1
 n_neg: 1
 
@@ -32,4 +32,4 @@ compute_channels:
     shape: [4, 1]
   bs_antenna:
     shape: [8, 1]
-  noise_power: -104.0
+  # noise_power: -104.0
