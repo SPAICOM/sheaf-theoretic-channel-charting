@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 from ..datasets import (
     SharedTrajectoryCSIDataset,
     TrajectoryCSIDataset,
-    csi_to_realvec,
+    csi_to_realvec_ferrand,
 )
 
 
@@ -709,9 +709,9 @@ class DeepMimoDataModule(l.LightningDataModule):
             - Dictionary mapping user IDs to positive data
             - Dictionary mapping user IDs to negative data
         """
-        self.idx_to_neg_pos = {}
+        idx_to_neg_pos = {}
         # user_id → full ordered trajectory (for plotting)
-        self._traj_sequences: dict[int, np.ndarray] = {}
+        traj_sequences: dict[int, np.ndarray] = {}
         for user_id in range(num_users):
             # Random trajectory length
             T_requested = int(self.rng.integers(self.T_min, self.T_max + 1))
@@ -725,7 +725,7 @@ class DeepMimoDataModule(l.LightningDataModule):
 
             # Generate trajectory of RX indices
             rx_idxs = self._generate_one(kind, T_requested)
-            self._traj_sequences[user_id] = rx_idxs
+            traj_sequences[user_id] = rx_idxs
             T_actual = len(rx_idxs)
 
             for t in range(T_actual):
@@ -757,7 +757,7 @@ class DeepMimoDataModule(l.LightningDataModule):
                 if self.n_neg is not None:
                     neg = neg[self.rng.choice(len(neg), size=self.n_neg, replace=False)]
 
-                self.idx_to_neg_pos[(user_id, anchor_rx)] = {
+                idx_to_neg_pos[(user_id, anchor_rx)] = {
                     'pos': pos,
                     'neg': neg,
                 }
@@ -777,7 +777,7 @@ class DeepMimoDataModule(l.LightningDataModule):
         # the coverage areas rx_pos_all_masked
         for base_station, _ in enumerate(self.ds):
             local_datasets[base_station] = TrajectoryCSIDataset(
-                idx_to_neg_pos=self.idx_to_neg_pos,
+                idx_to_neg_pos=idx_to_neg_pos,
                 valid_idxs=self.bs_coords[base_station]['valid_idxs'],
                 # rx_pos=self.bs_coords[base_station]['rx_pos'],
                 rx_pos=self.rx_pos_all_masked,
@@ -787,7 +787,7 @@ class DeepMimoDataModule(l.LightningDataModule):
         # Shared datasets: only trajectory anchor points visible to both BSes.
         # anchor_rx values in idx_to_neg_pos are indices into rx_pos_all_masked,
         # matching the indexing of bs_coords[bs_id]['valid_idxs'] and ['channels'].
-        all_traj_idxs = np.unique([anchor_rx for (_, anchor_rx) in self.idx_to_neg_pos])
+        all_traj_idxs = np.unique([anchor_rx for (_, anchor_rx) in idx_to_neg_pos])
 
         for bs_1, bs_2 in self.edge_set:
             bs1_valid = set(self.bs_coords[bs_1]['valid_idxs'].tolist())
@@ -817,8 +817,8 @@ class DeepMimoDataModule(l.LightningDataModule):
         return (
             local_datasets,
             shared_datasets,
-            self.idx_to_neg_pos.copy(),
-            self._traj_sequences.copy(),
+            idx_to_neg_pos,
+            traj_sequences,
         )
 
     def setup(
@@ -1043,7 +1043,7 @@ class DeepMimoDataModule(l.LightningDataModule):
         ) = self._shared_gen(val_num_users)
 
         sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs_all[0]])
-        self.feature_dim = csi_to_realvec(sample_ch).shape[0]
+        self.feature_dim = csi_to_realvec_ferrand(sample_ch).shape[0]
 
         self._setup_done = True
         return None
@@ -1091,12 +1091,14 @@ class DeepMimoDataModule(l.LightningDataModule):
             loaders[base_station] = DataLoader(
                 self.test_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
+                shuffle=False,
             )
 
         for bs_1, bs_2 in self.test_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
                 self.test_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
+                shuffle=False,
             )
 
         return CombinedLoader(loaders, mode='max_size_cycle')
@@ -1115,12 +1117,14 @@ class DeepMimoDataModule(l.LightningDataModule):
             loaders[base_station] = DataLoader(
                 self.val_local_dataset[base_station],
                 batch_size=self.cfg['batch_size'],
+                shuffle=False,
             )
 
         for bs_1, bs_2 in self.val_shared_dataset:
             loaders[(bs_1, bs_2)] = DataLoader(
                 self.val_shared_dataset[(bs_1, bs_2)],
                 batch_size=self.cfg['batch_size'],
+                shuffle=False,
             )
 
         return CombinedLoader(loaders, mode='max_size_cycle')

@@ -1,0 +1,6 @@
+_target_: src.SingleAgentModule
+
+lr: 1e-3
+weight_decay: 0.0
+transition_epoch: null
+steepness: 0.1

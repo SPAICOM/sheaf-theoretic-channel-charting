@@ -1,0 +1,29 @@
+defaults:
+  - _self_
+  - dataset: city_3_houston_3p5
+  - model: siameseNN
+  - orchestrator: single_agent
+
+logger:
+  _target_: lightning.pytorch.loggers.WandbLogger
+  project: sheaf_cc_single_agent
+  name: single_agent_${now:%Y-%m-%d}_${now:%H-%M-%S}
+  log_model: false
+
+seed: 80
+
+trainer:
+  max_epochs: 20
+  accelerator: auto
+  devices: 1
+  deterministic: false
+  num_sanity_val_steps: 2
+  log_every_n_steps: 10
+
+callbacks: null
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      model.use_decoder: false

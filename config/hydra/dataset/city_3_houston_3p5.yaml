@@ -29,7 +29,7 @@ edge_set:
 compute_channels:
   max_subcarriers: 288
   ue_antenna:
-    shape: [4, 1]
+    shape: [1, 1]
   bs_antenna:
-    shape: [8, 1]
+    shape: [8, 4]
   # noise_power: -104.0

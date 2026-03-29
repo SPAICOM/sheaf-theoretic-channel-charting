@@ -7,6 +7,7 @@ from .neural_diag_sheaf import NeuralDiagSheafCC
 from .optimal_transport_cc import OptimalTransportCC
 from .personalized_federated_cc import PersonalizedFederatedCC
 from .vanilla_baseline import VanillaCC
+from .single_agent import SingleAgentModule
 
 __all__ = [
     'FederatedCC',
@@ -18,4 +19,5 @@ __all__ = [
     'NeuralDiagSheafCC',
     'PersonalizedFederatedCC',
     'VanillaCC',
+    'SingleAgentModule',
 ]

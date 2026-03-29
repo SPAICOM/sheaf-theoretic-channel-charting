@@ -5,70 +5,130 @@ import torch
 from torch.utils.data import Dataset
 
 
-def csi_to_realvec(
-    H: torch.Tensor,
+def csi_to_realvec_ferrand(
+    H,
     lag_step: int = 4,
     max_lag: int = 60,
     eps: float = 1e-12,
 ) -> torch.Tensor:
-    """Preprocess CSI tensor following 'Triplet-Based Wireless Channel Charting'.
+    """Preprocess CSI following Ferrand et al. 'Triplet-Based Wireless Channel Charting'.
 
-    Converts complex-valued Channel State Information (CSI) tensors into
-    real-valued feature vectors using 2D FFT and frequency autocorrelation.
+    Steps:
+      1. 1D FFT over R (beam domain projection, replaces the paper's 2D FFT over n,m)
+      2. Frequency-domain autocorrelation (expectation over f) at multiple lags
+      3. Log-magnitude compression
+      4. Flatten to real vector
 
     Parameters
     ----------
     H : torch.Tensor
-        Complex CSI tensor of shape (R, T, F).
-        R : receiver antennas
-        T : transmitter antennas
-        F : frequency subcarriers
-    lag_step : int, optional
+        Complex CSI of shape (R, T, F).
+        R : Rx antennas (flat index)
+        T : Tx antennas (typically 1 for single UE)
+        F : subcarriers
+    lag_step : int
         Step between autocorrelation lags (default: 4).
-    max_lag : int, optional
-        Maximum lag for autocorrelation (default: 60).
-    eps : float, optional
-        Small constant for numerical stability in logarithm (default: 1e-12).
+    max_lag : int
+        Maximum lag (default: 60).
+    eps : float
+        Numerical stability constant for log (default: 1e-12).
 
     Returns
     -------
     torch.Tensor
-        Flattened real feature vector of shape (D,), where D is the
-        total number of features after processing.
+        Real feature vector of shape (R * T * num_lags,).
+        With defaults: num_lags = len(range(0, 61, 4)) = 16.
+    """
+    device = H.device
+    H_np = np.array(H)
+    R, T, F = H_np.shape
+
+    # Step 1: 1D FFT over R -> beam domain
+    # (Replaces paper's 2D FFT over n,m since R is flat here)
+    H_beam = np.fft.fft(H_np, axis=0)  # (R, T, F)
+
+    # Step 2: Frequency autocorrelation at each lag delta
+    # c(r, t, delta) = E_f[ H(r,t,f) * conj(H(r,t,f+delta)) ]
+    lags = np.arange(0, max_lag + 1, lag_step)
+    num_lags = len(lags)
+    c = np.zeros((R, T, num_lags), dtype=np.complex128)
+
+    for i, lag in enumerate(lags):
+        if lag == 0:
+            # Zero lag = mean power per (r, t)
+            c[:, :, i] = np.mean(H_beam * np.conj(H_beam), axis=2)
+        else:
+            # Mean cross-correlation over valid frequency pairs
+            c[:, :, i] = np.mean(
+                H_beam[:, :, :-lag] * np.conj(H_beam[:, :, lag:]),
+                axis=2,
+            )
+
+    # Step 3: Log of absolute value
+    c = np.log(np.abs(c) + eps)  # (R, T, num_lags), real
+
+    # Step 4: Flatten
+    features = torch.from_numpy(c.reshape(-1).astype(np.float32)).to(device)
+    return features
+
+
+def csi_to_realvec_dichasus(
+    H,
+    chunk_size: int = 32,
+) -> torch.Tensor:
+    """Preprocess CSI following the DICHASUS channel charting tutorial.
+
+    Feature engineering based on subcarrier chunk averaging:
+      1. Divide F subcarriers into non-overlapping chunks of size chunk_size
+      2. Average H within each chunk -> reduces frequency dimension F -> F//chunk_size
+      3. Stack real and imaginary parts -> real-valued output
+
+    This is a simple but effective approach: neighboring subcarriers are highly
+    correlated, so averaging reduces redundancy while preserving spatial information.
+    No phase preprocessing is applied (assumes calibrated input or phase-robust NN).
+
+    Parameters
+    ----------
+    H : torch.Tensor
+        Complex CSI of shape (R, T, F).
+        R : Rx antennas (flat index)
+        T : Tx antennas (typically 1 for single UE)
+        F : subcarriers (must be divisible by chunk_size)
+    chunk_size : int
+        Number of subcarriers per averaging chunk (default: 32).
+        Output frequency dimension = F // chunk_size.
+
+    Returns
+    -------
+    torch.Tensor
+        Real feature vector of shape (R * T * (F // chunk_size) * 2,).
+        The factor 2 comes from stacking real and imaginary parts.
 
     Example
     -------
-    >>> H = torch.randn(4, 2, 64, dtype=torch.complex64)  # (R, T, F)
-    >>> features = csi_to_realvec(H)  # shape: (D,)
+    >>> H = torch.randn(32, 1, 288, dtype=torch.complex64)
+    >>> features = csi_to_realvec_dichasus(H)
+    >>> # shape: (32 * 1 * 9 * 2,) = (576,) for chunk_size=32
     """
     device = H.device
     H = np.array(H)
     R, T, F = H.shape
 
-    # 2D FFT: transform from RT domain to beam angular domain
-    H_beam = np.fft.fft2(H, axes=(0, 1))  # shape: (R, T, F)
+    assert F % chunk_size == 0, (
+        f"F={F} must be divisible by chunk_size={chunk_size}"
+    )
+    num_chunks = F // chunk_size
 
-    # Compute autocorrelation in frequency domain across lags
-    lags = np.arange(0, max_lag + 1, lag_step)
-    num_lags = len(lags)
+    # Step 1+2: Average within each subcarrier chunk
+    # H reshaped to (R, T, num_chunks, chunk_size), then averaged over last axis
+    H_chunked = H.reshape(R, T, num_chunks, chunk_size)
+    H_avg = H_chunked.mean(dim=-1)  # (R, T, num_chunks), complex
 
-    r = np.zeros((R, T, num_lags), dtype=np.complex128)
+    # Step 3: Stack real and imaginary parts -> real tensor
+    features = torch.stack([H_avg.real, H_avg.imag], dim=-1)  # (R, T, num_chunks, 2)
 
-    for i, lag in enumerate(lags):
-        if lag == 0:
-            # Zero lag: autocorrelation is power sum across all frequencies
-            r[:, :, i] = np.sum(H_beam * np.conj(H_beam), axis=2)
-        else:
-            # Non-zero lag: shifted correlation across frequency axis
-            r[:, :, i] = np.sum(H_beam[:, :, :-lag] * np.conj(H_beam[:, :, lag:]), axis=2)
-
-    # Log scaling for dynamic range compression
-    r = np.log(np.abs(r) + eps)
-
-    # Flatten to 1D feature vector and convert back to tensor
-    features = r.reshape(-1)
-    features = torch.from_numpy(features).float().to(device)
-
+    # Step 4: Flatten
+    features = features.reshape(-1).float().to(device)
     return features
 
 
@@ -188,8 +248,8 @@ class SharedTrajectoryCSIDataset(Dataset):
             - H_2: Real-valued CSI vector from BS2
             - (idx_bs_1, idx_bs_2): Base station indices for identification
         """
-        H_1 = csi_to_realvec(self.channels_bs_1[index])
-        H_2 = csi_to_realvec(self.channels_bs_2[index])
+        H_1 = csi_to_realvec_ferrand(self.channels_bs_1[index])
+        H_2 = csi_to_realvec_ferrand(self.channels_bs_2[index])
 
         return H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
 
