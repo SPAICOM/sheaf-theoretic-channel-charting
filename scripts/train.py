@@ -11,7 +11,7 @@ from hydra.utils import instantiate
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
 
-from src import DeepMimoDataModule
+from src import DeepMimoDataModule, DICHASUSDataModule
 
 
 @hydra.main(
@@ -21,37 +21,16 @@ from src import DeepMimoDataModule
 )
 def main(cfg: DictConfig):
     # -----------------------------
-    # Load DeepMIMO
+    # Load dataset
     # -----------------------------
-    dm = DeepMimoDataModule(cfg.dataset, seed=cfg.seed)
+    if cfg.dataset.get('type') == 'dichasus':
+        dm = DICHASUSDataModule(cfg.dataset, seed=cfg.seed)
+    else:
+        dm = DeepMimoDataModule(cfg.dataset, seed=cfg.seed)
     dm.prepare_data()
     dm.setup('fit')
 
     dm.train_dataloader()
-    # print('LOCAL DATASETS')
-    # for k, ds in dm.train_local_dataset.items():
-    #     print(k, len(ds))
-
-    # print('\nSHARED DATASETS')
-    # for k, ds in dm.train_shared_dataset.items():
-    #     print(k, len(ds))
-
-    # batch = next(iter(loader))
-    # example_agent = batch[0][0]
-    # print(
-    #     len(example_agent),
-    #     example_agent[0].shape,
-    #     example_agent[1].shape,
-    #     example_agent[2].shape,
-    #     example_agent[2].shape,
-    # )
-
-    # batch = next(iter(dm.train_dataloader()))
-    # print(batch)
-
-    # xA, xP, xN, y = batch
-    # print(xA.shape, xP.shape, None if xN is None else xN.shape, y)
-    # print(xA)
 
     # -----------------------------
     # Model

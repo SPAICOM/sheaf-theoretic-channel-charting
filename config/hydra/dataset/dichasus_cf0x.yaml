@@ -1,0 +1,44 @@
+type: dichasus  # used by train.py to select DICHASUSDataModule
+
+data_dir: dichasus  # directory where .tfrecords and reftx-offsets-*.json are stored
+
+# Files to use (cf02-cf07 available). Explicit split avoids non-deterministic auto-split.
+train_files:
+  - dichasus-cf02
+  - dichasus-cf03
+  - dichasus-cf04
+val_files:
+  - dichasus-cf05
+test_files:
+  - dichasus-cf06
+
+# Distributed BS layout: 4 access points × 8 antennas = 32 total
+n_bs: 4
+antennas_per_bs: 8
+
+batch_size: 64
+num_workers: 0
+pin_memory: true
+
+preprocess: dichasus  # subcarrier-chunk averaging (matches DICHASUS tutorial)
+
+# Time-coherence windows (seconds)
+#   Positives : |Δt| ≤ Tc_pos
+#   Negatives : Tc_pos < |Δt| ≤ Tc_neg
+Tc_pos: 1.5
+Tc_neg: 5.0
+
+pair_mode: triplet
+n_pos: 1
+n_neg: 1
+
+# BS-pair edges for shared (inter-BS alignment) datasets.
+# Chain topology across the 4 distributed access points.
+edge_set:
+  - [0, 1]
+  - [1, 2]
+  - [2, 3]
+
+train_seed: 27
+val_seed: 123
+test_seed: 42
