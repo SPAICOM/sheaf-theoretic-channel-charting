@@ -14,6 +14,7 @@ format:
 # Run formatting and linting (CI-style target)
 clean: format check
 
+# Run wandb leet for experiment tracking
 leet:
     # Run wandb leet for experiment tracking
     uv run wandb beta leet run wandb
@@ -66,6 +67,11 @@ pfed *args:
 vanilla *args:
     # Vanilla Channel Charting - baseline siamese network without orchestration
     just sim vanilla {{args}}
+
+# Single-agent training (run without orchestrator)
+single *args:
+    # Single-agent Channel Charting - runs single agent directly
+    uv run scripts/single_agent_simulation.py {{args}}
 
 # Run all orchestrators (alphabetically ordered)
 sim-all *args:

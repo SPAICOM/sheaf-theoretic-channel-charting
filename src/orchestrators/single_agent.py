@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 import lightning as l
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 from scipy.spatial import KDTree
@@ -235,12 +236,32 @@ class SingleAgentModule(l.LightningModule):
     def plot_latent_space(
         self,
         output_dir: Path = Path('imgs'),
-        n_clusters: int = 4,
-        use_clusters: bool = True,
+        n_clusters: int | None = None,
         split: str = 'test',
         prefix: str = 'trajectory',
         last_epoch_only: bool = False,
     ) -> None:
+        """Plot latent space trajectories with optional clustering or position-based coloring.
+
+        Creates side-by-side visualizations showing:
+        - Left: Original trajectory in position space (X, Y coordinates)
+        - Right: Latent space embedding (learned representation)
+
+        Parameters
+        ----------
+        output_dir : Path
+            Directory to save generated plots.
+        n_clusters : int | None, optional
+            Number of clusters for KMeans coloring. If None (default), uses position-based
+            gradient coloring where x and y are normalized to [0,1] and combined as a
+            weighted average. If > 0, uses KMeans clustering with 'tab10' colormap.
+        split : str, optional
+            Which dataset split to plot ('train', 'val', or 'test'). Default: 'test'.
+        prefix : str, optional
+            Filename prefix for saved plots. Default: 'trajectory'.
+        last_epoch_only : bool, optional
+            If True, only plots at the final epoch. Default: False.
+        """
         if last_epoch_only and self.current_epoch < self.trainer.max_epochs - 1:
             return
         if self.agent.out_dim != 2:
@@ -250,10 +271,22 @@ class SingleAgentModule(l.LightningModule):
         embs = embs.cpu()
         pos = pos.cpu()
 
-        if use_clusters and n_clusters > 0:
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        # Determine color scheme based on n_clusters parameter:
+        # - n_clusters > 0: cluster-based coloring using KMeans
+        # - n_clusters is None (default): position-gradient using normalized (x, y) coordinates
+        # - n_clusters == 0: sequential index coloring (fallback)
+        if n_clusters is not None and n_clusters > 0:
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
             color = kmeans.fit_predict(pos.numpy())
             cmap = 'tab10'
+        elif n_clusters is None:
+            pos_np = pos.numpy()
+            x_min, x_max = pos_np[:, 0].min(), pos_np[:, 0].max()
+            y_min, y_max = pos_np[:, 1].min(), pos_np[:, 1].max()
+            x_norm = (pos_np[:, 0] - x_min) / (x_max - x_min + 1e-8)
+            y_norm = (pos_np[:, 1] - y_min) / (y_max - y_min + 1e-8)
+            color = 0.5 * x_norm + 0.5 * y_norm
+            cmap = 'viridis'
         else:
             color = None
             cmap = 'viridis'
@@ -262,7 +295,7 @@ class SingleAgentModule(l.LightningModule):
 
         fig, axes = plt.subplots(1, 2, figsize=(16, 8))
 
-        color_val = color if color is not None else range(len(pos))
+        color_val = color if color is not None else np.arange(len(pos))
         axes[0].scatter(
             pos[:, 0].numpy(), pos[:, 1].numpy(), s=10, alpha=0.7, c=color_val, cmap=cmap
         )

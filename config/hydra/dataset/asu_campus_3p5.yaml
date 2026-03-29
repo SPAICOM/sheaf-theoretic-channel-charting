@@ -5,6 +5,8 @@ batch_size: 16
 num_workers: 0
 pin_memory: true
 
+preprocess: ferrand  # 'ferrand' or 'dichasus'
+
 train_num_users: 100
 val_num_users: 100
 test_num_users: 100

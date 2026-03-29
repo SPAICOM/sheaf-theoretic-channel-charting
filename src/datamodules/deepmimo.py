@@ -25,13 +25,173 @@ from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from matplotlib.patches import Circle, Rectangle
 from omegaconf import DictConfig, OmegaConf
 from scipy.spatial import cKDTree as KDTree
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from ..datasets import (
-    SharedTrajectoryCSIDataset,
-    TrajectoryCSIDataset,
-    csi_to_realvec_ferrand,
-)
+from .utils import csi_to_realvec
+
+
+class TrajectoryCSIDataset(Dataset):
+    """Dataset producing Siamese batches for CSI trajectory learning.
+
+    Supports two sampling modes:
+    - ``'triplet'``: returns (xA, xP, xN, y=-1) for triplet loss
+    - ``'contrastive'``: returns (xA, xP, xN, y in {0,1}) for contrastive loss
+
+    Parameters
+    ----------
+    idx_to_neg_pos : dict
+        Mapping from (user_id, rx_idx) to dict with 'pos' and 'neg' keys.
+    valid_idxs : np.ndarray
+        Valid indexes for the specific base station.
+    rx_pos : np.ndarray
+        Positions of receiver antennas, shape (N_rx, 2 or 3).
+    channels : np.ndarray
+        Complex CSI data for each receiver position, shape (N_rx, R, T, F).
+    pair_mode : str, optional
+        Sampling mode: ``'triplet'`` or ``'contrastive'``.
+    p_positive : float, optional
+        Probability of sampling a positive pair (default: 0.5).
+    preprocess : str, optional
+        Preprocessing method: 'ferrand' (default) or 'dichasus'.
+    """
+
+    def __init__(
+        self,
+        idx_to_neg_pos: dict[tuple[int, int], dict[str, list[int]]],
+        valid_idxs: np.ndarray,
+        rx_pos: np.ndarray,
+        channels: np.ndarray,
+        pair_mode: str = 'triplet',
+        p_positive: float = 0.5,
+        preprocess: str = 'ferrand',
+        return_raw: bool = False,
+    ):
+        super().__init__()
+        assert pair_mode in ('triplet', 'contrastive')
+        self.pair_mode = pair_mode
+        self.p_positive = float(p_positive)
+        self.channels = channels
+        self.preprocess = preprocess
+        self.return_raw = return_raw
+        self.rng = np.random.default_rng()
+
+        self.idx_to_neg_pos = idx_to_neg_pos.copy()
+        self.valid_idxs = valid_idxs
+        for user_id, idx in idx_to_neg_pos:
+            if idx not in self.valid_idxs:
+                del self.idx_to_neg_pos[(user_id, idx)]
+
+        self.rx_pos = rx_pos
+
+    def _H_from_global_index(self, gidx: int) -> torch.Tensor:
+        return torch.from_numpy(self.channels[gidx])
+
+    def _pos_from_global_index(self, gidx: int) -> torch.Tensor:
+        return torch.from_numpy(self.rx_pos[gidx])
+
+    def __len__(self) -> int:
+        return len(self.idx_to_neg_pos)
+
+    def __getitem__(self, index: int):
+        id = list(self.idx_to_neg_pos.keys())[index]
+        gidx = id[1]
+        H_A = self._H_from_global_index(gidx)
+        pos = self._pos_from_global_index(gidx)
+
+        if self.return_raw:
+            return H_A, gidx, pos
+
+        pos_idxs = self.idx_to_neg_pos[id]['pos']
+        neg_idxs = self.idx_to_neg_pos[id]['neg']
+
+        match self.pair_mode:
+            case 'triplet':
+                xA = csi_to_realvec(H_A, method=self.preprocess)
+                xP = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in pos_idxs
+                    ]
+                )
+                xN = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in neg_idxs
+                    ]
+                )
+                y = torch.tensor(-1, dtype=torch.long)
+            case 'contrastive':
+                xA = csi_to_realvec(H_A, method=self.preprocess)
+                xP = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in pos_idxs
+                    ]
+                )
+                xN = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in neg_idxs
+                    ]
+                )
+                y = torch.tensor(
+                    1 if self.rng.random() < self.p_positive else 0,
+                    dtype=torch.long,
+                )
+
+        return xA, xP, xN, y, pos
+
+
+class SharedTrajectoryCSIDataset(Dataset):
+    """Dataset producing shared samples between base stations for CSI learning.
+
+    Parameters
+    ----------
+    shared_pos : np.ndarray
+        Positions of shared receiver locations, shape (N_shared, 2 or 3).
+    channels_bs_1 : np.ndarray
+        Complex CSI data from base station 1, shape (N_shared, R, T, F).
+    channels_bs_2 : np.ndarray
+        Complex CSI data from base station 2, shape (N_shared, R, T, F).
+    idx_bs_1 : int
+        Index identifier for base station 1.
+    idx_bs_2 : int
+        Index identifier for base station 2.
+    shared_traj_idxs : np.ndarray | None
+        Trajectory indices into rx_pos_all_masked.
+    preprocess : str, optional
+        Preprocessing method: 'ferrand' (default) or 'dichasus'.
+    """
+
+    def __init__(
+        self,
+        shared_pos: np.ndarray,
+        channels_bs_1: np.ndarray,
+        channels_bs_2: np.ndarray,
+        idx_bs_1: int,
+        idx_bs_2: int,
+        shared_traj_idxs: np.ndarray | None = None,
+        preprocess: str = 'ferrand',
+    ):
+        super().__init__()
+        self.idx_bs_1 = idx_bs_1
+        self.idx_bs_2 = idx_bs_2
+        self.shared_pos = shared_pos
+        self.shared_traj_idxs = shared_traj_idxs
+        self.channels_bs_1 = channels_bs_1
+        self.channels_bs_2 = channels_bs_2
+        self.preprocess = preprocess
+
+    def __len__(self) -> int:
+        return self.channels_bs_1.shape[0]
+
+    def __getitem__(
+        self,
+        index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int]]:
+        H_1 = csi_to_realvec(self.channels_bs_1[index], method=self.preprocess)
+        H_2 = csi_to_realvec(self.channels_bs_2[index], method=self.preprocess)
+        return H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
 
 
 def _merge_defaults(
@@ -202,6 +362,9 @@ class DeepMimoDataModule(l.LightningDataModule):
         self.val_dataset = None
         self.n_agents = 1
         self.feature_dim = None
+
+        # CSI conversion method
+        self.preprocess = self.cfg.get('preprocess', 'ferrand')
 
         # Assertions
         assert self.out_window > self.in_window, (
@@ -782,6 +945,7 @@ class DeepMimoDataModule(l.LightningDataModule):
                 # rx_pos=self.bs_coords[base_station]['rx_pos'],
                 rx_pos=self.rx_pos_all_masked,
                 channels=self.bs_coords[base_station]['channels'],
+                preprocess=self.preprocess,
             )
 
         # Shared datasets: only trajectory anchor points visible to both BSes.
@@ -812,6 +976,7 @@ class DeepMimoDataModule(l.LightningDataModule):
                 channels_bs_1=channels_bs_1,
                 channels_bs_2=channels_bs_2,
                 shared_traj_idxs=shared_traj_idxs,
+                preprocess=self.preprocess,
             )
 
         return (
@@ -1043,7 +1208,7 @@ class DeepMimoDataModule(l.LightningDataModule):
         ) = self._shared_gen(val_num_users)
 
         sample_ch = torch.from_numpy(self.ds[0].channels[self.valid_idxs_all[0]])
-        self.feature_dim = csi_to_realvec_ferrand(sample_ch).shape[0]
+        self.feature_dim = csi_to_realvec(sample_ch, method=self.preprocess).shape[0]
 
         self._setup_done = True
         return None

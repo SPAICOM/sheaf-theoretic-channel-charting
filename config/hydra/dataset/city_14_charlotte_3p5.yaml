@@ -5,6 +5,8 @@ batch_size: 16
 num_workers: 0
 pin_memory: true
 
+preprocess: ferrand  # 'ferrand' or 'dichasus'
+
 exclude_buildings: true
 trajectory_kind: neighbor_linear
 train_num_users: 1

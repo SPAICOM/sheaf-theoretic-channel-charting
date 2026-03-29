@@ -55,8 +55,8 @@ from matplotlib.patches import Circle
 # ── project root on path ──────────────────────────────────────────────────────
 sys.path.insert(0, '.')
 
-from src.datamodules.deepmimo import DeepMimoDataModule
-from src.datasets import TrajectoryCSIDataset, csi_to_realvec
+from src.datamodules.deepmimo import DeepMimoDataModule, TrajectoryCSIDataset
+from src.datamodules.utils import csi_to_realvec_ferrand as csi_to_realvec
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
