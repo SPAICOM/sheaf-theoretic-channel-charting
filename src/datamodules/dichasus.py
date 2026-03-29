@@ -45,6 +45,9 @@ from typing import Any
 import lightning as l
 import numpy as np
 import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import torch
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from omegaconf import DictConfig
@@ -94,9 +97,7 @@ class DICHASUSDataModule(l.LightningDataModule):
     }
 
     # Base URL for offset JSON calibration files (served by DICHASUS website)
-    _OFFSETS_BASE_URL = (
-        'https://dichasus.inue.uni-stuttgart.de/datasets/data/dichasus-cf0x/'
-    )
+    _OFFSETS_BASE_URL = 'https://dichasus.inue.uni-stuttgart.de/datasets/data/dichasus-cf0x/'
 
     DEFAULTS: dict[str, Any] = {
         'data_dir': 'dichasus',
@@ -115,17 +116,22 @@ class DICHASUSDataModule(l.LightningDataModule):
         #   Negatives  :  Tc_pos < |Δt| ≤ Tc_neg
         'Tc_pos': 1.5,
         'Tc_neg': 5.0,
-        'pair_mode': 'triplet',   # 'triplet' or 'contrastive'
-        'p_positive': 0.5,        # for contrastive mode
-        'n_pos': None,            # max positives per anchor (None = all)
-        'n_neg': None,            # max negatives per anchor (None = all)
+        'pair_mode': 'triplet',  # 'triplet' or 'contrastive'
+        'p_positive': 0.5,  # for contrastive mode
+        'n_pos': None,  # max positives per anchor (None = all)
+        'n_neg': None,  # max negatives per anchor (None = all)
         'preprocess': 'dichasus',
         # BS pairs for shared datasets (inter-BS alignment loss).
         # Format: list of [bs_id_1, bs_id_2] pairs.  [] = no shared datasets.
         'edge_set': [],
-        # File-level train/val/test split.
-        # Each is a list of file stems.  If all None, an automatic 70/15/15
-        # split is applied over the available files.
+        # Sample-level train/val/test split (fractions).
+        # If None, falls back to file-level split via train_files/val_files/test_files.
+        # If set, all files are concatenated and split by triplets.
+        'train_split': None,  # e.g., 0.7
+        'val_split': None,  # e.g., 0.15
+        'test_split': None,  # e.g., 0.15
+        # File-level train/val/test split (deprecated if train_split is set).
+        # Each is a list of file stems.
         'train_files': None,
         'val_files': None,
         'test_files': None,
@@ -155,9 +161,7 @@ class DICHASUSDataModule(l.LightningDataModule):
         self.n_agents: int = self.n_bs
         self.feature_dim: int | None = None
 
-        self.edge_set: list[tuple[int, int]] = [
-            tuple(e) for e in self.cfg.get('edge_set', [])
-        ]
+        self.edge_set: list[tuple[int, int]] = [tuple(e) for e in self.cfg.get('edge_set', [])]
 
         self._train_files: list[str] | None = self.cfg.get('train_files')
         self._val_files: list[str] | None = self.cfg.get('val_files')
@@ -174,8 +178,7 @@ class DICHASUSDataModule(l.LightningDataModule):
     def prepare_data(self) -> None:
         """Download TFRecord files (DaRUS) and calibration offset JSONs (DICHASUS site)."""
         darus_base = (
-            'https://darus.uni-stuttgart.de/api/access/datafile/'
-            ':persistentId?persistentId='
+            'https://darus.uni-stuttgart.de/api/access/datafile/:persistentId?persistentId='
         )
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -185,9 +188,7 @@ class DICHASUSDataModule(l.LightningDataModule):
             # TFRecord from DaRUS
             tfrecords_dest = self.data_dir / f'{stem}.tfrecords'
             if not tfrecords_dest.exists():
-                self._download(
-                    darus_base + self.ALL_FILES[stem], tfrecords_dest, tqdm
-                )
+                self._download(darus_base + self.ALL_FILES[stem], tfrecords_dest, tqdm)
 
             # Offset JSON from DICHASUS website
             offsets_dest = self.data_dir / f'reftx-offsets-{stem}.json'
@@ -200,7 +201,7 @@ class DICHASUSDataModule(l.LightningDataModule):
 
     @staticmethod
     def _download(url: str, dest: Path, tqdm_cls) -> None:
-        r = requests.get(url, stream=True)
+        r = requests.get(url, stream=True, verify=False)
         r.raise_for_status()
         total = int(r.headers.get('content-length', 0))
         with (
@@ -276,6 +277,7 @@ class DICHASUSDataModule(l.LightningDataModule):
 
         # STO/CPO phase calibration (per antenna × per subcarrier)
         if offsets is not None:
+
             def _calibrate(csi, pos, time):
                 sc_idx = tf.cast(tf.range(subcarriers), tf.float32)
                 sto_offset = tf.tensordot(
@@ -288,23 +290,21 @@ class DICHASUSDataModule(l.LightningDataModule):
                     tf.ones(subcarriers, dtype=tf.float32),
                     axes=0,
                 )
-                csi = csi * tf.exp(
-                    tf.complex(tf.zeros_like(sto_offset), sto_offset + cpo_offset)
-                )
+                csi = csi * tf.exp(tf.complex(tf.zeros_like(sto_offset), sto_offset + cpo_offset))
                 return csi, pos, time
 
             dataset = dataset.map(_calibrate, num_parallel_calls=tf.data.AUTOTUNE)
 
         csi_list, pos_list, time_list = [], [], []
         for csi, pos, time in dataset:
-            csi_list.append(csi.numpy())    # (total_ant, 1024) complex64
-            pos_list.append(pos.numpy())    # (2,) float64
+            csi_list.append(csi.numpy())  # (total_ant, 1024) complex64
+            pos_list.append(pos.numpy())  # (2,) float64
             time_list.append(time.numpy())  # float32 scalar
 
         # Stack, then insert the T=1 transmit-antenna axis
         # Shape: (N, total_antennas, 1, 1024) — matches (N, R, T, F) convention
         csi_arr = np.stack(csi_list, axis=0)[:, :, np.newaxis, :]  # complex64
-        positions = np.stack(pos_list, axis=0)                       # float64
+        positions = np.stack(pos_list, axis=0)  # float64
         timestamps = np.array(time_list, dtype=np.float32)
 
         # Sort by timestamp (measurements may have minor reordering)
@@ -364,9 +364,7 @@ class DICHASUSDataModule(l.LightningDataModule):
             lo_neg = int(np.searchsorted(timestamps, t - self.Tc_neg, side='left'))
             hi_neg = int(np.searchsorted(timestamps, t + self.Tc_neg, side='right'))
             neg_candidates = np.arange(lo_neg, hi_neg, dtype=np.int64)
-            neg_local = neg_candidates[
-                (neg_candidates < lo_pos) | (neg_candidates >= hi_pos)
-            ]
+            neg_local = neg_candidates[(neg_candidates < lo_pos) | (neg_candidates >= hi_pos)]
 
             if len(pos_local) == 0 or len(neg_local) == 0:
                 continue
@@ -435,7 +433,7 @@ class DICHASUSDataModule(l.LightningDataModule):
 
         # Concatenated arrays: (N_total, total_antennas, 1, 1024)
         channels_all = np.concatenate(all_csi, axis=0)
-        rx_pos = np.concatenate(all_pos, axis=0)   # (N_total, 2)
+        rx_pos = np.concatenate(all_pos, axis=0)  # (N_total, 2)
 
         # Build idx_to_neg_pos per file (no cross-file pairs)
         idx_to_neg_pos: dict = {}
@@ -491,6 +489,108 @@ class DICHASUSDataModule(l.LightningDataModule):
     # Lightning: setup
     # ------------------------------------------------------------------
 
+    def _load_all_files(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+        """Load all TFRecord files and concatenate them into one dataset.
+
+        Returns
+        -------
+        channels_all : np.ndarray, shape (N_total, total_antennas, 1, 1024)
+        rx_pos : np.ndarray, shape (N_total, 2)
+        timestamps_all : np.ndarray, shape (N_total,)
+        idx_to_neg_pos : dict
+        """
+        all_csi: list[np.ndarray] = []
+        all_pos: list[np.ndarray] = []
+        all_ts: list[np.ndarray] = []
+
+        for stem in self.file_stems:
+            csi, pos, ts = self._parse_tfrecord(stem)
+            all_csi.append(csi)
+            all_pos.append(pos)
+            all_ts.append(ts)
+
+        channels_all = np.concatenate(all_csi, axis=0)
+        rx_pos = np.concatenate(all_pos, axis=0)
+        timestamps_all = np.concatenate(all_ts, axis=0)
+
+        rng = np.random.default_rng(self.cfg['train_seed'])
+        idx_to_neg_pos = self._build_idx_to_neg_pos(
+            timestamps_all, file_id=0, global_offset=0, rng=rng
+        )
+
+        return channels_all, rx_pos, timestamps_all, idx_to_neg_pos
+
+    def _build_datasets_from_concatenated(
+        self,
+        channels_all: np.ndarray,
+        rx_pos: np.ndarray,
+        idx_to_neg_pos: dict,
+        split_indices: dict[str, np.ndarray],
+    ) -> tuple[
+        dict[int, TrajectoryCSIDataset],
+        dict[tuple[int, int], SharedTrajectoryCSIDataset],
+        dict,
+    ]:
+        """Build local and shared datasets from concatenated data using split indices.
+
+        Parameters
+        ----------
+        channels_all : np.ndarray
+            Full concatenated CSI array.
+        rx_pos : np.ndarray
+            Full concatenated positions.
+        idx_to_neg_pos : dict
+            Full positive/negative index mapping.
+        split_indices : dict
+            Dict with 'train', 'val', 'test' keys, each containing np.ndarray of indices.
+
+        Returns
+        -------
+        local_datasets : dict[int, TrajectoryCSIDataset]
+        shared_datasets : dict[tuple[int,int], SharedTrajectoryCSIDataset]
+        traj_dict : dict
+        """
+        apb = self.antennas_per_bs
+
+        local_datasets: dict[int, TrajectoryCSIDataset] = {}
+        for bs_id in range(self.n_bs):
+            channels_bs = channels_all[:, bs_id * apb : (bs_id + 1) * apb, :, :]
+            local_datasets[bs_id] = TrajectoryCSIDataset(
+                idx_to_neg_pos=idx_to_neg_pos,
+                valid_idxs=split_indices['train'],
+                rx_pos=rx_pos,
+                channels=channels_bs,
+                pair_mode=self.cfg['pair_mode'],
+                p_positive=float(self.cfg['p_positive']),
+                preprocess=self.preprocess,
+            )
+
+        shared_datasets: dict[tuple[int, int], SharedTrajectoryCSIDataset] = {}
+        all_anchor_idxs = np.unique([anchor for (_, anchor) in idx_to_neg_pos])
+        train_anchor_idxs = all_anchor_idxs[np.isin(all_anchor_idxs, split_indices['train'])]
+
+        for bs_1, bs_2 in self.edge_set:
+            if len(train_anchor_idxs) == 0:
+                continue
+
+            shared_pos = rx_pos[train_anchor_idxs]
+            channels_bs_1 = channels_all[train_anchor_idxs, bs_1 * apb : (bs_1 + 1) * apb, :, :]
+            channels_bs_2 = channels_all[train_anchor_idxs, bs_2 * apb : (bs_2 + 1) * apb, :, :]
+
+            shared_datasets[(bs_1, bs_2)] = SharedTrajectoryCSIDataset(
+                idx_bs_1=bs_1,
+                idx_bs_2=bs_2,
+                shared_pos=shared_pos,
+                channels_bs_1=channels_bs_1,
+                channels_bs_2=channels_bs_2,
+                shared_traj_idxs=train_anchor_idxs,
+                preprocess=self.preprocess,
+            )
+
+        return local_datasets, shared_datasets, idx_to_neg_pos
+
     def setup(self, stage: str | None = None) -> None:
         """Load TFRecord files and construct train/val/test datasets.
 
@@ -503,39 +603,94 @@ class DICHASUSDataModule(l.LightningDataModule):
         if getattr(self, '_setup_done', False):
             return
 
-        # Determine file-level splits
-        train_stems = self._train_files
-        val_stems = self._val_files
-        test_stems = self._test_files
+        train_split = self.cfg.get('train_split')
+        val_split = self.cfg.get('val_split')
+        test_split = self.cfg.get('test_split')
 
-        if train_stems is None and val_stems is None and test_stems is None:
-            # Auto-split: ~70 % train, ~15 % val, ~15 % test (by file count)
-            n = len(self.file_stems)
-            n_train = max(1, int(round(0.7 * n)))
-            n_val = max(1, (n - n_train) // 2)
-            train_stems = self.file_stems[:n_train]
-            val_stems = self.file_stems[n_train : n_train + n_val]
-            test_stems = self.file_stems[n_train + n_val :] or self.file_stems[-1:]
+        if train_split is not None and val_split is not None and test_split is not None:
+            channels_all, rx_pos, timestamps_all, idx_to_neg_pos = self._load_all_files()
 
-        (
-            self.train_local_dataset,
-            self.train_shared_dataset,
-            self.train_traj_dict,
-        ) = self._build_split(train_stems, np.random.default_rng(self.cfg['train_seed']))
+            N_total = len(channels_all)
+            all_indices = np.arange(N_total, dtype=np.int64)
 
-        (
-            self.val_local_dataset,
-            self.val_shared_dataset,
-            self.val_traj_dict,
-        ) = self._build_split(val_stems, np.random.default_rng(self.cfg['val_seed']))
+            rng = np.random.default_rng(self.cfg['train_seed'])
+            rng.shuffle(all_indices)
 
-        (
-            self.test_local_dataset,
-            self.test_shared_dataset,
-            self.test_traj_dict,
-        ) = self._build_split(test_stems, np.random.default_rng(self.cfg['test_seed']))
+            n_train = int(train_split * N_total)
+            n_val = int(val_split * N_total)
 
-        # Feature dimension: inferred from one sample of BS 0
+            train_indices = all_indices[:n_train]
+            val_indices = all_indices[n_train : n_train + n_val]
+            test_indices = all_indices[n_train + n_val :]
+
+            split_indices = {
+                'train': train_indices,
+                'val': val_indices,
+                'test': test_indices,
+            }
+
+            (
+                self.train_local_dataset,
+                self.train_shared_dataset,
+                self.train_traj_dict,
+            ) = self._build_datasets_from_concatenated(
+                channels_all, rx_pos, idx_to_neg_pos, {'train': train_indices}
+            )
+
+            (
+                self.val_local_dataset,
+                self.val_shared_dataset,
+                self.val_traj_dict,
+            ) = self._build_datasets_from_concatenated(
+                channels_all, rx_pos, idx_to_neg_pos, {'train': val_indices}
+            )
+
+            (
+                self.test_local_dataset,
+                self.test_shared_dataset,
+                self.test_traj_dict,
+            ) = self._build_datasets_from_concatenated(
+                channels_all, rx_pos, idx_to_neg_pos, {'train': test_indices}
+            )
+
+        else:
+            train_stems = self._train_files
+            val_stems = self._val_files
+            test_stems = self._test_files
+
+            if train_stems is None and val_stems is None and test_stems is None:
+                n = len(self.file_stems)
+                n_train = max(1, int(round(0.7 * n)))
+                n_val = max(1, (n - n_train) // 2)
+                train_stems = self.file_stems[:n_train]
+                val_stems = self.file_stems[n_train : n_train + n_val]
+                test_stems = self.file_stems[n_train + n_val :] or self.file_stems[-1:]
+
+            if train_stems is None:
+                raise ValueError('train_files must be specified for file-level split')
+            if val_stems is None:
+                raise ValueError('val_files must be specified for file-level split')
+            if test_stems is None:
+                raise ValueError('test_files must be specified for file-level split')
+
+            (
+                self.train_local_dataset,
+                self.train_shared_dataset,
+                self.train_traj_dict,
+            ) = self._build_split(train_stems, np.random.default_rng(self.cfg['train_seed']))
+
+            (
+                self.val_local_dataset,
+                self.val_shared_dataset,
+                self.val_traj_dict,
+            ) = self._build_split(val_stems, np.random.default_rng(self.cfg['val_seed']))
+
+            (
+                self.test_local_dataset,
+                self.test_shared_dataset,
+                self.test_traj_dict,
+            ) = self._build_split(test_stems, np.random.default_rng(self.cfg['test_seed']))
+
         sample_csi = torch.from_numpy(self.train_local_dataset[0].channels[0])
         self.feature_dim = csi_to_realvec(sample_csi, method=self.preprocess).shape[0]
 

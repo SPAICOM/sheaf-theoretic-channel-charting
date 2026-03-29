@@ -2,15 +2,22 @@ type: dichasus  # used by train.py to select DICHASUSDataModule
 
 data_dir: dichasus  # directory where .tfrecords and reftx-offsets-*.json are stored
 
-# Files to use (cf02-cf07 available). Explicit split avoids non-deterministic auto-split.
-train_files:
-  - dichasus-cf02
-  - dichasus-cf03
-  - dichasus-cf04
-val_files:
-  - dichasus-cf05
-test_files:
-  - dichasus-cf06
+# Sample-level split (concatenates all files first, then splits by triplets).
+# If set, train_files/val_files/test_files are ignored.
+train_split: 0.7
+val_split: 0.15
+test_split: 0.15
+
+# File-level split (deprecated if train_split is set above).
+# Each is a list of file stems.
+# train_files:
+#   - dichasus-cf02
+#   - dichasus-cf03
+#   - dichasus-cf04
+# val_files:
+#   - dichasus-cf05
+# test_files:
+#   - dichasus-cf06
 
 # Distributed BS layout: 4 access points × 8 antennas = 32 total
 n_bs: 4

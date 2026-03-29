@@ -9,7 +9,9 @@ preprocess: ferrand  # 'ferrand' or 'dichasus'
 
 exclude_buildings: true
 inscribed_ellipse: true
-trajectory_kind: neighbor_linear
+pos_distance: 2
+neg_distance: 40
+trajectory_kind: coherent
 heading_momentum: 0.7
 train_num_users: 1
 val_num_users: 1
@@ -18,10 +20,10 @@ test_num_users: 1
 coverage_area: 0.6
 T_min: 8e3
 T_max: 9e3
-in_window: 5
-out_window: 700
-n_pos: 1
-n_neg: 1
+in_window: 10
+out_window: 100
+n_pos: 10
+n_neg: 10
 
 edge_set:
   - [1, 2]

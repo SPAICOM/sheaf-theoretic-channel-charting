@@ -26,6 +26,7 @@ from matplotlib.patches import Circle, Rectangle
 from omegaconf import DictConfig, OmegaConf
 from scipy.spatial import cKDTree as KDTree
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 from .utils import csi_to_realvec
 
@@ -309,6 +310,8 @@ class DeepMimoDataModule(l.LightningDataModule):
         'streets_only': False,  # restrict feasible set to street areas only
         'streets_proximity_dist': 15.0,  # max distance (m) from a building to count as "street"
         'inscribed_ellipse': False,  # restrict to largest ellipse inside coverage
+        'pos_distance': 2,  # max graph distance for positive examples (coherent strategy)
+        'neg_distance': 500,  # min graph distance for negative examples (coherent strategy)
     }
 
     def __init__(
@@ -342,6 +345,8 @@ class DeepMimoDataModule(l.LightningDataModule):
         self.T_max = self.cfg['T_max']
         self.coverage_area = self.cfg['coverage_area']
         self.trajectory_kind = self.cfg['trajectory_kind']
+        self.pos_distance = self.cfg['pos_distance']
+        self.neg_distance = self.cfg['neg_distance']
         self.rng = np.random.default_rng(seed)
         self.kinds = (
             'linear',
@@ -350,6 +355,7 @@ class DeepMimoDataModule(l.LightningDataModule):
             'full',
             'neighbor_linear',
             'neighbor_l',
+            'coherent',
         )
 
         self.edge_set = [tuple(edge) for edge in self.cfg['edge_set']]
@@ -828,12 +834,105 @@ class DeepMimoDataModule(l.LightningDataModule):
                     offset += length
                 return traj
 
+            case 'coherent':
+                N = len(self.rx_pos_all_masked)
+                current = int(self.rng.integers(0, N))
+                ang = float(self.rng.uniform(0, 2 * np.pi))
+                heading = np.array([np.cos(ang), np.sin(ang)])
+                traj = np.empty(T, dtype=np.int64)
+                stuck_buf = np.empty((self._stuck_interval, 2))
+                for t in range(T):
+                    traj[t] = current
+                    stuck_buf[t % self._stuck_interval] = self.rx_pos_all_masked[current]
+                    if (
+                        t > 0
+                        and t % self._stuck_interval == 0
+                        and stuck_buf.std(axis=0).max() < self._stuck_threshold
+                    ):
+                        ang = float(self.rng.uniform(0, 2 * np.pi))
+                        heading = np.array([np.cos(ang), np.sin(ang)])
+                    current, heading = self._neighbor_step(current, heading)
+                return traj
+
             case _:
                 raise RuntimeError(
                     f'Trajectory kind "{kind}" is not supported. '
                     'Choose from: "linear", "circular", "random", '
-                    '"full", "neighbor_linear", "neighbor_l".'
+                    '"full", "neighbor_linear", "neighbor_l", "coherent".'
                 )
+
+    def _bfs_distances(self, start: int, max_dist: int) -> np.ndarray:
+        """
+        Compute graph distances from a start node up to max_dist hops.
+
+        Parameters
+        ----------
+        start : int
+            Starting node index.
+        max_dist : int
+            Maximum distance to compute.
+
+        Returns
+        -------
+        np.ndarray
+            Array where index i contains all nodes at distance i from start,
+            for i <= max_dist.
+        """
+        from collections import deque
+
+        n = len(self.neighbor_graph)
+        distances = [set() for _ in range(max_dist + 1)]
+        visited = np.zeros(n, dtype=bool)
+        queue = deque([(start, 0)])
+        visited[start] = True
+
+        while queue:
+            node, dist = queue.popleft()
+            if dist <= max_dist:
+                distances[dist].add(node)
+            if dist < max_dist:
+                for neighbor in self.neighbor_graph[node]:
+                    if not visited[neighbor]:
+                        visited[neighbor] = True
+                        queue.append((neighbor, dist + 1))
+
+        return np.array([np.array(list(s), dtype=np.int64) for s in distances], dtype=object)
+
+    def _estimate_graph_diameter(self, sample_size: int = 50) -> int:
+        """
+        Estimate the graph diameter by sampling nodes and running BFS.
+
+        Parameters
+        ----------
+        sample_size : int
+            Number of random nodes to sample for estimation.
+
+        Returns
+        -------
+        int
+            Estimated diameter (max distance found).
+        """
+        from collections import deque
+
+        n = len(self.neighbor_graph)
+        sample_size = min(sample_size, n)
+        sample_nodes = self.rng.choice(n, size=sample_size, replace=False)
+        max_dist = 0
+
+        for start in sample_nodes:
+            visited = np.zeros(n, dtype=bool)
+            queue = deque([(start, 0)])
+            visited[start] = True
+            while queue:
+                node, dist = queue.popleft()
+                if dist > max_dist:
+                    max_dist = dist
+                for neighbor in self.neighbor_graph[node]:
+                    if not visited[neighbor]:
+                        visited[neighbor] = True
+                        queue.append((neighbor, dist + 1))
+
+        return max_dist
 
     def _pick_one(self, idxs: np.ndarray) -> int:
         """
@@ -873,8 +972,18 @@ class DeepMimoDataModule(l.LightningDataModule):
             - Dictionary mapping user IDs to negative data
         """
         idx_to_neg_pos = {}
-        # user_id → full ordered trajectory (for plotting)
         traj_sequences: dict[int, np.ndarray] = {}
+
+        effective_neg_dist = self.neg_distance
+        if self.trajectory_kind == 'coherent':
+            diameter = self._estimate_graph_diameter()
+            if effective_neg_dist > diameter:
+                effective_neg_dist = max(1, int(diameter * 0.8))
+                print(
+                    f'[coherent] Graph diameter estimate: {diameter}, '
+                    f'using neg_distance: {effective_neg_dist}'
+                )
+
         for user_id in range(num_users):
             # Random trajectory length
             T_requested = int(self.rng.integers(self.T_min, self.T_max + 1))
@@ -891,22 +1000,28 @@ class DeepMimoDataModule(l.LightningDataModule):
             traj_sequences[user_id] = rx_idxs
             T_actual = len(rx_idxs)
 
-            for t in range(T_actual):
+            for t in tqdm(range(T_actual), desc=f'User {user_id}/{num_users}', leave=False):
                 # Skip trajectory endpoints (within out_window of start/end)
                 if t < self.out_window or t >= T_actual - self.out_window:
                     continue
 
                 anchor_rx = rx_idxs[t]
 
-                # Positives: trajectory-time-adjacent steps within in_window
-                pos_left = rx_idxs[max(0, t - self.in_window) : t]
-                pos_right = rx_idxs[t + 1 : t + self.in_window + 1]
-                pos = np.concatenate([pos_left, pos_right])
+                if kind == 'coherent':
+                    dists = self._bfs_distances(anchor_rx, effective_neg_dist)
+                    pos = np.concatenate([dists[i] for i in range(1, self.pos_distance + 1)])
+                    neg = np.concatenate([dists[i] for i in range(effective_neg_dist, len(dists))])
+                    pos = pos[pos != anchor_rx]
+                else:
+                    # Positives: trajectory-time-adjacent steps within in_window
+                    pos_left = rx_idxs[max(0, t - self.in_window) : t]
+                    pos_right = rx_idxs[t + 1 : t + self.in_window + 1]
+                    pos = np.concatenate([pos_left, pos_right])
 
-                # Negatives: steps outside in_window but within out_window
-                neg_left = rx_idxs[max(0, t - self.out_window) : max(0, t - self.in_window)]
-                neg_right = rx_idxs[t + self.in_window + 1 : t + self.out_window + 1]
-                neg = np.concatenate([neg_left, neg_right])
+                    # Negatives: steps at least out_window away from anchor
+                    neg_left = rx_idxs[: max(0, t - self.out_window)]
+                    neg_right = rx_idxs[t + self.out_window + 1 :]
+                    neg = np.concatenate([neg_left, neg_right])
 
                 if len(pos) == 0 or len(neg) == 0:
                     continue
