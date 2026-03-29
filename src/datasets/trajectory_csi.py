@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .shared_csi import csi_to_realvec_ferrand, csi_to_realvec_dichasus
+from .shared_csi import csi_to_realvec_ferrand
 
 
 class TrajectoryCSIDataset(Dataset):
@@ -165,15 +165,23 @@ class TrajectoryCSIDataset(Dataset):
         match self.pair_mode:
             case 'triplet':
                 xA = csi_to_realvec_ferrand(H_A)
-                xP = torch.vstack([csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in pos_idxs])
-                xN = torch.vstack([csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in neg_idxs])
+                xP = torch.vstack(
+                    [csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in pos_idxs]
+                )
+                xN = torch.vstack(
+                    [csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in neg_idxs]
+                )
                 y = torch.tensor(-1, dtype=torch.long)
 
             case 'contrastive':
                 # sample positive pair with prob p_positive else negative pair
                 xA = csi_to_realvec_ferrand(H_A)
-                xP = torch.vstack([csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in pos_idxs])
-                xN = torch.vstack([csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in neg_idxs])
+                xP = torch.vstack(
+                    [csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in pos_idxs]
+                )
+                xN = torch.vstack(
+                    [csi_to_realvec_ferrand(self._H_from_global_index(i)) for i in neg_idxs]
+                )
                 y = torch.tensor(
                     1 if self.rng.random() < self.p_positive else 0,
                     dtype=torch.long,

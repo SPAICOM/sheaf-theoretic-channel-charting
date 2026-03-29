@@ -6,8 +6,8 @@ from .flat_bundle_cc import FlatBundleCC
 from .neural_diag_sheaf import NeuralDiagSheafCC
 from .optimal_transport_cc import OptimalTransportCC
 from .personalized_federated_cc import PersonalizedFederatedCC
-from .vanilla_baseline import VanillaCC
 from .single_agent import SingleAgentModule
+from .vanilla_baseline import VanillaCC
 
 __all__ = [
     'FederatedCC',

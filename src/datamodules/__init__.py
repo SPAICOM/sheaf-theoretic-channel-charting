@@ -1,9 +1,5 @@
 from .deepmimo import DeepMimoDataModule
-from .dichasus import DICHASUSDataModule
 from .deepmimo_single import SingleAgentDataModule
+from .dichasus import DICHASUSDataModule
 
-__all__ = [
-    'DeepMimoDataModule',
-    'DICHASUSDataModule',
-    'SingleAgentDataModule'
-]
+__all__ = ['DeepMimoDataModule', 'DICHASUSDataModule', 'SingleAgentDataModule']

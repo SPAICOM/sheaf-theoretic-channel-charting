@@ -10,11 +10,13 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import scipy
 
 import lightning as l
 import matplotlib.pyplot as plt
-import scipy
 import torch
 import torch.nn as nn
 from scipy.spatial import KDTree
@@ -261,13 +263,17 @@ class SingleAgentModule(l.LightningModule):
         fig, axes = plt.subplots(1, 2, figsize=(16, 8))
 
         color_val = color if color is not None else range(len(pos))
-        axes[0].scatter(pos[:, 0].numpy(), pos[:, 1].numpy(), s=10, alpha=0.7, c=color_val, cmap=cmap)
+        axes[0].scatter(
+            pos[:, 0].numpy(), pos[:, 1].numpy(), s=10, alpha=0.7, c=color_val, cmap=cmap
+        )
         axes[0].set_title('Original Trajectory')
         axes[0].set_xlabel('X Position')
         axes[0].set_ylabel('Y Position')
         axes[0].set_aspect('equal', 'box')
 
-        axes[1].scatter(embs[:, 0].numpy(), embs[:, 1].numpy(), s=10, alpha=0.7, c=color_val, cmap=cmap)
+        axes[1].scatter(
+            embs[:, 0].numpy(), embs[:, 1].numpy(), s=10, alpha=0.7, c=color_val, cmap=cmap
+        )
         axes[1].set_title('Latent Space')
         axes[1].set_xlabel('Dim 1')
         axes[1].set_ylabel('Dim 2')

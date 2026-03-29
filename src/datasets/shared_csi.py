@@ -114,9 +114,7 @@ def csi_to_realvec_dichasus(
     H = np.array(H)
     R, T, F = H.shape
 
-    assert F % chunk_size == 0, (
-        f"F={F} must be divisible by chunk_size={chunk_size}"
-    )
+    assert F % chunk_size == 0, f'F={F} must be divisible by chunk_size={chunk_size}'
     num_chunks = F // chunk_size
 
     # Step 1+2: Average within each subcarrier chunk
