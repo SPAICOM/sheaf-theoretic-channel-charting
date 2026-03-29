@@ -219,6 +219,7 @@ lightning_logs/
 
 # Private files and old code/data
 deepmimo_scenarios/
+dichasus/
 trash/
 tmp/
 data/*
