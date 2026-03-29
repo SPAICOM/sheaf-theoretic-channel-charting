@@ -259,6 +259,11 @@ class FederatedCC(BaseOrchestrator):
 
         return outputs, total_loss
 
+    @torch.no_grad()
+    def _compute_FOSCTTM(self) -> None:
+        # TODO: Implement FOSCTTM computation for federated CC
+        pass
+
 
 if __name__ == '__main__':
     pass
