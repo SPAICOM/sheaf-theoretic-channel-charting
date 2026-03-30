@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - dataset: city_3_houston_3p5
+  - dataset: dichasus_cf0x
   - model: siameseNN
   - orchestrator: single_agent
 

@@ -1,9 +1,9 @@
-"""Single-agent training script.
+"""Single-agent training script for DICHASUS dataset.
 
 Runs the full pipeline for one base station without an orchestrator or
 CombinedLoader.  The Agent is wrapped directly in SingleAgentModule, which
-acts as the LightningModule.  Data is served by SingleAgentDataModule, which
-returns plain DataLoaders for agent 0's local dataset.
+acts as the LightningModule.  Data is served by DICHASUSSingleAgentDataModule,
+which returns plain DataLoaders for base station 0's local dataset.
 """
 
 import sys
@@ -15,8 +15,8 @@ import hydra
 from hydra.utils import instantiate
 from lightning import Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
-from src.datamodules.deepmimo_single import SingleAgentDataModule
 
+from src.datamodules import DICHASUSSingleAgentDataModule
 from src.utils import remove_non_empty_dir
 
 
@@ -59,7 +59,7 @@ def main(cfg: DictConfig) -> None:
     # ===================================================
     #             Define the DataModule
     # ===================================================
-    datamodule = SingleAgentDataModule(cfg.dataset, seed=cfg.seed)
+    datamodule = DICHASUSSingleAgentDataModule(cfg.dataset, seed=cfg.seed)
     datamodule.prepare_data()
     datamodule.setup('fit')
 

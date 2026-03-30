@@ -11,7 +11,7 @@ from .deepmimo import DeepMimoDataModule
 from .dichasus import DICHASUSDataModule
 
 
-class SingleAgentDataModule(DeepMimoDataModule):
+class DeepMimoSingleAgentDataModule(DeepMimoDataModule):
     """DataModule for single-agent training on agent index 0.
 
     Overrides the dataloader methods of DeepMimoDataModule to return plain
