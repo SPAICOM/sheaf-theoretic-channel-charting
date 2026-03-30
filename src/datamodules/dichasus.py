@@ -1,39 +1,27 @@
 """
 PyTorch Lightning DataModule for the DICHASUS real-world CSI dataset.
 
-Unlike DeepMIMO (simulated + synthetic trajectories), this module:
+This module provides lazy loading of DICHASUS TFRecord files using the tfrecord
+library. Unlike DeepMIMO (simulated + synthetic trajectories), this module:
+
 1. Loads real TFRecord files from the DICHASUS distributed channel sounder.
 2. Applies STO/CPO calibration via per-file offset JSON files.
 3. Splits the full antenna array into per-BS sub-arrays.
-4. Builds positive/negative sample pairs from timestamps (time-coherence window Tc),
-   not from synthetic trajectories.
-5. Treats each TFRecord file as one independent measurement campaign
-   (no cross-file pairs).
-6. Reuses TrajectoryCSIDataset and SharedTrajectoryCSIDataset unchanged,
-   so the same orchestrator/agent pipeline works without modification.
+4. Builds positive/negative sample pairs from timestamps (time-coherence window Tc).
+5. Treats each TFRecord file as one independent measurement campaign.
+6. Uses lazy loading - CSI loaded only when __getitem__ is called.
+
+Memory Efficiency
+-----------------
+Only timestamps (small) are loaded into memory upfront. The actual CSI data
+is loaded on-demand from TFRecord files during training. This allows handling
+large datasets without loading everything into RAM.
 
 DICHASUS antenna layout (cf0x datasets)
-----------------------------------------
+---------------------------------------
 The raw CSI tensor has shape (total_antennas, 1024) with all BSs concatenated.
 For the cf0x family the default split is 4 BSs × 8 antennas each (= 32 total).
 This is configurable via ``n_bs`` and ``antennas_per_bs``.
-
-Key differences from DeepMimoDataModule
-----------------------------------------
-* No trajectory generation: the UE movement is real and already recorded.
-* Positive/negative pairs are defined by a time-coherence window
-  (``Tc_pos`` / ``Tc_neg`` in seconds) rather than trajectory step windows.
-* All BSs see the same positions simultaneously (no per-BS coverage filtering).
-  ``valid_idxs`` is identical for every BS.
-* File-level train/val/test split (each .tfrecords = one measurement campaign).
-* Offset JSON files are served directly from the DICHASUS website.
-
-Data structure per sample (DICHASUS cf0x)
-------------------------------------------
-    CSI        : (total_antennas, 1024) complex64
-                 split into n_bs arrays of (antennas_per_bs, 1, 1024) to match (R, T, F)
-    Position   : (2,) float64   XY from tachymeter ground truth
-    Timestamp  : float32 scalar seconds
 """
 
 from __future__ import annotations
@@ -45,31 +33,556 @@ from typing import Any
 import lightning as l
 import numpy as np
 import requests
-import urllib3
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import tfrecord
 import torch
+import urllib3
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from omegaconf import DictConfig
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
-from .deepmimo import SharedTrajectoryCSIDataset, TrajectoryCSIDataset, _merge_defaults
 from .utils import csi_to_realvec
+
+# Suppress SSL warnings when downloading from DICHASUS website
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def _merge_defaults(
+    defaults: dict[str, Any],
+    override: Any,
+) -> dict[str, Any]:
+    """Merge default configuration values with user-provided overrides.
+
+    Parameters
+    ----------
+    defaults : dict
+        Default configuration dictionary.
+    override : dict | DictConfig | None
+        User-provided configuration to merge with defaults.
+
+    Returns
+    -------
+    dict
+        Merged configuration dictionary.
+    """
+    if override is None:
+        return defaults.copy()
+    if isinstance(override, dict):
+        return {**defaults, **override}
+    if isinstance(override, DictConfig):
+        return {**defaults, **dict(override.items())}  # type: ignore[return-value]
+    msg = f'Cannot merge defaults of type {type(override)} with override'
+    raise TypeError(msg)
+
+
+class LazyDICHASUSTrajectoryDataset(Dataset):
+    """Lazy-loading trajectory dataset for DICHASUS CSI data.
+
+    This dataset loads CSI data on-demand from TFRecord files rather than
+    storing all data in memory. It maintains an index mapping that tracks
+    which file and record index contains each sample.
+
+    Supports two sampling modes:
+    - ``'triplet'``: returns (xA, xP, xN, y=-1) for triplet loss
+    - ``'contrastive'``: returns (xA, xP, xN, y in {0,1}) for contrastive loss
+
+    CSI is loaded lazily from TFRecord files only when __getitem__ is called.
+
+    Parameters
+    ----------
+    idx_to_neg_pos : dict
+        Mapping from (user_id, rx_idx) to dict with 'pos' and 'neg' keys.
+        These are global indices into the concatenated dataset.
+    valid_idxs : np.ndarray
+        Valid indexes for the specific base station (after train/val/test split).
+    file_record_map : dict[int, tuple[str, int]]
+        Maps global index to (tfrecord_path, record_index) tuple.
+        This is the core of lazy loading - we know WHERE each sample lives
+        without loading the actual data.
+    timestamps : np.ndarray
+        Timestamps for each global index (for pos/neg selection based on Tc).
+    file_offsets : dict[str, int]
+        Offset to add to record indices for each file (for global idx calculation).
+    antennas_per_bs : int
+        Number of antennas per base station.
+    n_bs : int
+        Number of base stations.
+    bs_id : int
+        Which BS this dataset represents (for antenna slicing).
+    pair_mode : str
+        'triplet' or 'contrastive' sampling mode.
+    p_positive : float
+        Probability of positive pair for contrastive mode.
+    preprocess : str
+        Preprocessing method for CSI (e.g., 'dichasus').
+    offsets_path : str | None
+        Path to calibration offsets JSON (per-file). If None, no calibration applied.
+    """
+
+    def __init__(
+        self,
+        idx_to_neg_pos: dict[tuple[int, int], dict[str, np.ndarray]],
+        valid_idxs: np.ndarray,
+        file_record_map: dict[int, tuple[str, int]],
+        timestamps: np.ndarray,
+        file_offsets: dict[str, int],
+        antennas_per_bs: int,
+        n_bs: int,
+        bs_id: int,
+        pair_mode: str = 'triplet',
+        p_positive: float = 0.5,
+        preprocess: str = 'dichasus',
+        offsets_path: str | None = None,
+    ):
+        super().__init__()
+        assert pair_mode in ('triplet', 'contrastive')
+        self.pair_mode = pair_mode
+        self.p_positive = float(p_positive)
+        self.preprocess = preprocess
+        self.rng = np.random.default_rng()
+
+        # Filter idx_to_neg_pos to only include valid indices (train/val/test split)
+        self.idx_to_neg_pos = idx_to_neg_pos.copy()
+        self.valid_idxs = valid_idxs
+        for user_id, idx in list(self.idx_to_neg_pos.keys()):
+            if idx not in self.valid_idxs:
+                del self.idx_to_neg_pos[(user_id, idx)]
+
+        # Lazy loading infrastructure
+        self.file_record_map = file_record_map
+        self.timestamps = timestamps
+        self.file_offsets = file_offsets
+        self.antennas_per_bs = antennas_per_bs
+        self.n_bs = n_bs
+        self.bs_id = bs_id
+        self.total_antennas = antennas_per_bs * n_bs
+
+        # Load STO/CPO calibration offsets if available
+        # These correct for Sampling Time Offset and Carrier Phase Offset
+        self.offsets = None
+        if offsets_path and Path(offsets_path).exists():
+            with open(offsets_path) as f:
+                self.offsets = json.load(f)
+
+        # Cache for loaded TFRecord data - avoids re-reading file for each sample
+        # Key: tfrecord_path, Value: list of all records in that file
+        self._tfrecord_cache: dict[str, list] = {}
+
+    def _load_record(self, tfrecord_path: str, record_idx: int) -> tuple:
+        """Load a single record from TFRecord file, with caching.
+
+        This method implements lazy loading with a file-level cache:
+        1. Check if file is already in cache
+        2. If not, load the entire file into memory (future calls will be fast)
+        3. Return the specific record requested
+
+        The caching strategy is a tradeoff:
+        - Pro: Multiple samples from same file don't require re-reading
+        - Con: First access to each file is slow
+
+        Parameters
+        ----------
+        tfrecord_path : str
+            Path to the TFRecord file.
+        record_idx : int
+            Index of the record within the file.
+
+        Returns
+        -------
+        tuple
+            (csi, position, timestamp) where:
+            - csi: np.ndarray of shape (total_antennas, 1, 1024), complex64
+             - position: np.ndarray of shape (2,), float64
+            - timestamp: float32
+        """
+        # Load record directly without caching entire file
+        # This is truly lazy - only loads the requested sample
+        # Note: This is slower than caching but doesn't require 20GB+ RAM
+        description = {
+            'csi': 'byte',
+            'pos-tachy': 'byte',
+            'time': 'float',
+        }
+        loader = tfrecord.tfrecord_loader(tfrecord_path, None, description)
+
+        # Iterate to the desired record
+        record = None
+        for i, r in enumerate(loader):
+            if i == record_idx:
+                record = r
+                break
+
+        if record is None:
+            raise ValueError(f'Record {record_idx} not found in {tfrecord_path}')
+
+        # Parse CSI: bytes -> float32 array -> reshape -> complex conversion
+        # DICHASUS stores CSI as a protobuf-wrapped byte string
+        # First byte is protobuf field tag, skip it to get raw float32 data
+        # Truncate to exact expected size (n_antennas * 1024 subcarriers * 2 for real/imag)
+        expected_bytes = self.total_antennas * 1024 * 2 * 4
+        csi_bytes = record['csi'][
+            1 : 1 + expected_bytes
+        ]  # Skip protobuf wrapper, truncate to exact size
+        csi = np.frombuffer(csi_bytes, dtype=np.float32).reshape(self.total_antennas, 1024, 2)
+        # Convert to complex64: real + 1j * imag
+        csi = csi[:, :, 0] + 1j * csi[:, :, 1]
+        # FFT shift moves DC to center of subcarrier array (required by DICHASUS format)
+        csi = np.fft.fftshift(csi, axes=1)
+
+        # Parse position: DICHASUS uses protobuf with field 4 containing (x, y, z) as float64
+        pos_bytes = record['pos-tachy']
+        # Find field 4 (tag = 0x22) in the protobuf
+        pos_field_start = pos_bytes.find(b'\x22\x18')  # Field 4, length-delimited
+        if pos_field_start >= 0:
+            # Field 4: skip 2 bytes (tag + length), next 24 bytes are 3 float64
+            pos_data = pos_bytes[pos_field_start + 2 : pos_field_start + 26]
+            pos = np.frombuffer(pos_data, dtype=np.float64)[:2]  # X, Y only
+        else:
+            pos = np.zeros(2, dtype=np.float64)
+
+        # Get timestamp: tfrecord returns array with shape (1,), get scalar
+        time = float(record['time'].item())
+
+        # Apply STO/CPO calibration if available
+        # STO (Sampling Time Offset): phase shift proportional to subcarrier index
+        # CPO (Carrier Phase Offset): constant phase shift per antenna
+        # Combined: csi * exp(j * (sto_offset + cpo_offset))
+        if self.offsets is not None:
+            subcarriers = 1024
+            # Create subcarrier index array [0, 1, ..., 1023]
+            sc_idx = np.arange(subcarriers, dtype=np.float32)
+
+            # STO: linear phase ramp across subcarriers
+            # Each antenna has different sto coefficient
+            sto_offset = np.tensordot(
+                np.array(self.offsets['sto'], dtype=np.float32),
+                2.0 * np.pi * sc_idx / subcarriers,
+                axes=0,
+            )
+
+            # CPO: constant phase per antenna (same across all subcarriers)
+            cpo_offset = np.tensordot(
+                np.array(self.offsets['cpo'], dtype=np.float32),
+                np.ones(subcarriers, dtype=np.float32),
+                axes=0,
+            )
+
+            # Apply phase correction: multiply by exp(j * phase)
+            phase = np.exp(1j * (sto_offset + cpo_offset))
+            csi = csi * phase
+
+        # Add the T=1 dimension to match (R, T, F) convention expected by csi_to_realvec
+        csi = csi[:, np.newaxis, :]
+
+        return csi, pos, time
+
+    def _H_from_global_index(self, gidx: int) -> torch.Tensor:
+        """Load CSI for a specific global index.
+
+        Parameters
+        ----------
+        gidx : int
+            Global index into the concatenated dataset.
+
+        Returns
+        -------
+        torch.Tensor
+            CSI tensor for this BS, shape (antennas_per_bs, 1, 1024), complex64
+        """
+        # Look up which file and record contains this sample
+        tfrecord_path, record_idx = self.file_record_map[gidx]
+        csi, _, _ = self._load_record(tfrecord_path, record_idx)
+
+        # Slice to get only this BS's antennas
+        # BS 0: antennas 0-7, BS 1: antennas 8-15, etc.
+        csi_bs = csi[self.bs_id * self.antennas_per_bs : (self.bs_id + 1) * self.antennas_per_bs]
+        return torch.from_numpy(csi_bs)
+
+    def _pos_from_global_index(self, gidx: int) -> torch.Tensor:
+        """Load position for a specific global index.
+
+        Parameters
+        ----------
+        gidx : int
+            Global index into the concatenated dataset.
+
+        Returns
+        -------
+        torch.Tensor
+            Position tensor, shape (2,), float64 (X, Y)
+        """
+        tfrecord_path, record_idx = self.file_record_map[gidx]
+        _, pos, _ = self._load_record(tfrecord_path, record_idx)
+        return torch.from_numpy(pos)
+
+    def __len__(self) -> int:
+        """Return number of anchor samples in this dataset."""
+        return len(self.idx_to_neg_pos)
+
+    def __getitem__(self, index: int):
+        """Get a training sample (anchor, positive, negative triplet).
+
+        Returns
+        -------
+        tuple
+            For triplet mode: (xA, xP, xN, y, pos)
+            - xA: Anchor CSI, shape (feature_dim,)
+            - xP: Positive CSI(s), shape (n_pos, feature_dim) or (feature_dim,)
+            - xN: Negative CSI(s), shape (n_neg, feature_dim) or (feature_dim,)
+            - y: Label (-1 for triplet)
+            - pos: Position, shape (2,)
+
+            For contrastive mode: (xA, xP, xN, y, pos)
+            - y is 1 if positive pair, 0 if negative pair
+        """
+        # Look up global index for this anchor
+        id = list(self.idx_to_neg_pos.keys())[index]
+        gidx = id[1]
+
+        # Load anchor CSI and position (lazy - only loads when needed)
+        H_A = self._H_from_global_index(gidx)
+        pos = self._pos_from_global_index(gidx)
+
+        # Get positive and negative sample indices
+        pos_idxs = self.idx_to_neg_pos[id]['pos']
+        neg_idxs = self.idx_to_neg_pos[id]['neg']
+
+        # Pre-declare tensors for type checker
+        xA: torch.Tensor
+        xP: torch.Tensor
+        xN: torch.Tensor
+        y: torch.Tensor
+
+        # Handle triplet vs contrastive modes
+        match self.pair_mode:
+            case 'triplet':
+                # Triplet loss: anchor, positive, negative with fixed y=-1
+                xA = csi_to_realvec(H_A, method=self.preprocess)
+                xP = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in pos_idxs
+                    ]
+                )
+                xN = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in neg_idxs
+                    ]
+                )
+                y = torch.tensor(-1, dtype=torch.long)
+            case 'contrastive':
+                # Contrastive loss: randomly choose positive or negative as pair
+                xA = csi_to_realvec(H_A, method=self.preprocess)
+                xP = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in pos_idxs
+                    ]
+                )
+                xN = torch.vstack(
+                    [
+                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
+                        for i in neg_idxs
+                    ]
+                )
+                y = torch.tensor(
+                    1 if self.rng.random() < self.p_positive else 0,
+                    dtype=torch.long,
+                )
+            case _:
+                raise ValueError(f'Unknown pair_mode: {self.pair_mode}')
+
+        return xA, xP, xN, y, pos
+
+
+class LazyDICHASUSSharedDataset(Dataset):
+    """Lazy-loading shared dataset for inter-BS alignment.
+
+    This dataset provides paired CSI samples from two different base stations
+    at the same UE positions. Used for training models that learn alignment
+    between different BS perspectives.
+
+    Parameters
+    ----------
+    shared_global_idxs : np.ndarray
+        Global indices for shared samples (positions seen by both BSs).
+    file_record_map : dict[int, tuple[str, int]]
+        Maps global index to (tfrecord_path, record_index).
+    antennas_per_bs : int
+        Number of antennas per base station.
+    n_bs : int
+        Number of base stations.
+    idx_bs_1 : int
+        First base station ID (e.g., 0 for BS1).
+    idx_bs_2 : int
+        Second base station ID (e.g., 1 for BS2).
+    preprocess : str
+        Preprocessing method for CSI.
+    offsets_path : str | None
+        Path to calibration offsets JSON.
+    """
+
+    def __init__(
+        self,
+        shared_global_idxs: np.ndarray,
+        file_record_map: dict[int, tuple[str, int]],
+        antennas_per_bs: int,
+        n_bs: int,
+        idx_bs_1: int,
+        idx_bs_2: int,
+        preprocess: str = 'dichasus',
+        offsets_path: str | None = None,
+    ):
+        super().__init__()
+        self.shared_global_idxs = shared_global_idxs
+        self.file_record_map = file_record_map
+        self.antennas_per_bs = antennas_per_bs
+        self.n_bs = n_bs
+        self.idx_bs_1 = idx_bs_1
+        self.idx_bs_2 = idx_bs_2
+        self.total_antennas = antennas_per_bs * n_bs
+        self.preprocess = preprocess
+
+        # Load calibration offsets (same as in LazyDICHASUSTrajectoryDataset)
+        self.offsets = None
+        if offsets_path and Path(offsets_path).exists():
+            with open(offsets_path) as f:
+                self.offsets = json.load(f)
+
+        # File-level cache for lazy loading (same caching strategy)
+        self._tfrecord_cache: dict[str, list] = {}
+
+    def _load_record(self, tfrecord_path: str, record_idx: int) -> np.ndarray:
+        """Load a single record from TFRecord file, with caching.
+
+        Similar to LazyDICHASUSTrajectoryDataset._load_record but only
+        returns CSI (not position or timestamp).
+
+        Parameters
+        ----------
+        tfrecord_path : str
+            Path to the TFRecord file.
+        record_idx : int
+            Index of the record within the file.
+
+        Returns
+        -------
+        np.ndarray
+            CSI tensor, shape (total_antennas, 1024), complex64
+        """
+        # Load record directly without caching entire file
+        description = {
+            'csi': 'byte',
+            'pos-tachy': 'byte',
+            'time': 'float',
+        }
+        loader = tfrecord.tfrecord_loader(tfrecord_path, None, description)
+
+        # Iterate to the desired record
+        record = None
+        for i, r in enumerate(loader):
+            if i == record_idx:
+                record = r
+                break
+
+        if record is None:
+            raise ValueError(f'Record {record_idx} not found in {tfrecord_path}')
+
+        # Parse CSI (same as in LazyDICHASUSTrajectoryDataset)
+        expected_bytes = self.total_antennas * 1024 * 2 * 4
+        csi_bytes = record['csi'][1 : 1 + expected_bytes]
+        csi = np.frombuffer(csi_bytes, dtype=np.float32).reshape(self.total_antennas, 1024, 2)
+        csi = csi[:, :, 0] + 1j * csi[:, :, 1]
+        csi = np.fft.fftshift(csi, axes=1)
+
+        # Apply calibration if available
+        if self.offsets is not None:
+            subcarriers = 1024
+            sc_idx = np.arange(subcarriers, dtype=np.float32)
+            sto_offset = np.tensordot(
+                np.array(self.offsets['sto'], dtype=np.float32),
+                2.0 * np.pi * sc_idx / subcarriers,
+                axes=0,
+            )
+            cpo_offset = np.tensordot(
+                np.array(self.offsets['cpo'], dtype=np.float32),
+                np.ones(subcarriers, dtype=np.float32),
+                axes=0,
+            )
+            phase = np.exp(1j * (sto_offset + cpo_offset))
+            csi = csi * phase
+
+        # Add T=1 dimension to match (R, T, F) convention
+        csi = csi[:, np.newaxis, :]
+
+        return csi
+
+    def __len__(self) -> int:
+        """Return number of shared samples."""
+        return len(self.shared_global_idxs)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int]]:
+        """Get a shared sample from two base stations.
+
+        Parameters
+        ----------
+        index : int
+            Index into shared_global_idxs.
+
+        Returns
+        -------
+        tuple
+            (H_1, H_2, (idx_bs_1, idx_bs_2))
+            - H_1: Preprocessed CSI from BS1, shape (feature_dim,)
+            - H_2: Preprocessed CSI from BS2, shape (feature_dim,)
+            - (idx_bs_1, idx_bs_2): Tuple identifying the BS pair
+        """
+        # Get global index and load CSI (lazy)
+        gidx = self.shared_global_idxs[index]
+        tfrecord_path, record_idx = self.file_record_map[gidx]
+        csi = self._load_record(tfrecord_path, record_idx)
+
+        # Slice for both base stations
+        csi_bs_1 = csi[
+            self.idx_bs_1 * self.antennas_per_bs : (self.idx_bs_1 + 1) * self.antennas_per_bs
+        ]
+        csi_bs_2 = csi[
+            self.idx_bs_2 * self.antennas_per_bs : (self.idx_bs_2 + 1) * self.antennas_per_bs
+        ]
+
+        # Preprocess and convert to real-valued vector
+        H_1 = csi_to_realvec(torch.from_numpy(csi_bs_1), method=self.preprocess)
+        H_2 = csi_to_realvec(torch.from_numpy(csi_bs_2), method=self.preprocess)
+
+        return H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
 
 
 class DICHASUSDataModule(l.LightningDataModule):
-    """
-    PyTorch Lightning DataModule for trajectory-based CSI learning on DICHASUS data.
+    """PyTorch Lightning DataModule for trajectory-based CSI learning on DICHASUS data.
 
-    Mirrors the interface of ``DeepMimoDataModule`` so that the same
-    orchestrators, agents, and training scripts work without modification.
+    This DataModule handles the DICHASUS dataset with lazy loading via tfrecord.
+    It downloads data from DaRUS (data repository) and applies calibration.
+
+    Data Flow
+    ---------
+    1. prepare_data(): Download TFRecord files and calibration JSONs
+    2. setup(): Build index mappings and create datasets (lazy - no CSI loaded)
+    3. train_dataloader(): Returns CombinedLoader with lazy datasets
+
+    Memory Efficiency
+    -----------------
+    - TFRecord files are downloaded once
+    - Timestamps are loaded upfront (small, ~MB for 100k samples)
+    - Actual CSI is loaded on-demand during training batches
+    - File-level caching avoids re-reading same file multiple times per epoch
 
     Parameters
     ----------
     dataset_cfg : DictConfig | dict | None
         Configuration overriding DEFAULTS.
     seed : int | None
-        Global random seed.
+        Global random seed for shuffling and pair selection.
 
     Attributes
     ----------
@@ -77,16 +590,26 @@ class DICHASUSDataModule(l.LightningDataModule):
         Number of distributed BSs = ``n_bs``.
     feature_dim : int
         Dimension of the per-BS CSI feature vector (set during ``setup``).
-    train/val/test_local_dataset : dict[int, TrajectoryCSIDataset]
-        ``{bs_id: dataset}`` — one entry per BS, same format as DeepMimoDataModule.
-    train/val/test_shared_dataset : dict[tuple[int,int], SharedTrajectoryCSIDataset]
-        One entry per BS pair in ``edge_set``; shared positions = all anchor points
-        (every BS sees every UE position simultaneously in DICHASUS).
+    train/val/test_local_dataset : dict[int, LazyDICHASUSTrajectoryDataset]
+        ``{bs_id: dataset}`` — one entry per BS.
+    train/val/test_shared_dataset : dict[tuple[int,int], LazyDICHASUSSharedDataset]
+        One entry per BS pair in ``edge_set``.
     train/val/test_traj_dict : dict
-        Positive/negative index mapping (idx_to_neg_pos) for each split.
+        Positive/negative index mapping for each split.
+
+    Example
+    -------
+    >>> from omegaconf import OmegaConf
+    >>> from src.datamodules.dichasus import DICHASUSDataModule
+    >>> cfg = OmegaConf.load('config/hydra/dataset/dichasus_cf0x.yaml')
+    >>> dm = DICHASUSDataModule(cfg)
+    >>> dm.prepare_data()  # Download data
+    >>> dm.setup('train')  # Build datasets
+    >>> train_loader = dm.train_dataloader()
     """
 
-    # TFRecord DOIs (DaRUS) — offsets served directly from the DICHASUS website
+    # TFRecord DOIs from DaRUS ( Stuttgart Research and Trusted Exchange)
+    # Each DOI corresponds to one measurement campaign/file
     ALL_FILES: dict[str, str] = {
         'dichasus-cf02': 'doi:10.18419/darus-2854/8',
         'dichasus-cf03': 'doi:10.18419/darus-2854/9',
@@ -96,45 +619,34 @@ class DICHASUSDataModule(l.LightningDataModule):
         'dichasus-cf07': 'doi:10.18419/darus-2854/13',
     }
 
-    # Base URL for offset JSON calibration files (served by DICHASUS website)
+    # Base URL for calibration offset files (STO/CPO corrections)
     _OFFSETS_BASE_URL = 'https://dichasus.inue.uni-stuttgart.de/datasets/data/dichasus-cf0x/'
 
+    # Default configuration
+    # These can be overridden via dataset_cfg parameter or YAML config
     DEFAULTS: dict[str, Any] = {
         'data_dir': 'dichasus',
-        # List of file stems to use, e.g. ['dichasus-cf02', 'dichasus-cf03'].
-        # None → use all available files.
-        'files': None,
+        'files': [
+            'dichasus-cf02',
+            'dichasus-cf03',
+            'dichasus-cf04',
+        ],
         'batch_size': 64,
         'num_workers': 0,
         'pin_memory': True,
-        # Distributed BS antenna layout.
-        # total_antennas = n_bs * antennas_per_bs must match the stored CSI shape.
-        'n_bs': 4,
+        'base_stations': [0, 1, 2],  # Which BSs to use
         'antennas_per_bs': 8,
-        # Time-coherence windows (seconds).
-        #   Positives  :  |Δt| ≤ Tc_pos
-        #   Negatives  :  Tc_pos < |Δt| ≤ Tc_neg
-        'Tc_pos': 1.5,
-        'Tc_neg': 5.0,
-        'pair_mode': 'triplet',  # 'triplet' or 'contrastive'
-        'p_positive': 0.5,  # for contrastive mode
-        'n_pos': None,  # max positives per anchor (None = all)
-        'n_neg': None,  # max negatives per anchor (None = all)
+        'Tc_pos': 1.5,  # Positive time-coherence window (seconds)
+        'Tc_neg': 5.0,  # Negative time-coherence window (seconds)
+        'pair_mode': 'triplet',
+        'p_positive': 0.5,
+        'n_pos': None,  # Max positives per anchor (None = all)
+        'n_neg': None,  # Max negatives per anchor (None = all)
         'preprocess': 'dichasus',
-        # BS pairs for shared datasets (inter-BS alignment loss).
-        # Format: list of [bs_id_1, bs_id_2] pairs.  [] = no shared datasets.
-        'edge_set': [],
-        # Sample-level train/val/test split (fractions).
-        # If None, falls back to file-level split via train_files/val_files/test_files.
-        # If set, all files are concatenated and split by triplets.
-        'train_split': None,  # e.g., 0.7
-        'val_split': None,  # e.g., 0.15
-        'test_split': None,  # e.g., 0.15
-        # File-level train/val/test split (deprecated if train_split is set).
-        # Each is a list of file stems.
-        'train_files': None,
-        'val_files': None,
-        'test_files': None,
+        'edge_set': [],  # BS pairs for shared datasets
+        'train_split': 0.7,
+        'val_split': 0.15,
+        'test_split': 0.15,
         'train_seed': 27,
         'test_seed': 42,
         'val_seed': 123,
@@ -145,175 +657,148 @@ class DICHASUSDataModule(l.LightningDataModule):
         dataset_cfg: DictConfig | dict[str, Any] | None = None,
         seed: int | None = None,
     ) -> None:
+        """Initialize the DICHASUS DataModule.
+
+        Parameters
+        ----------
+        dataset_cfg : DictConfig | dict | None
+            Configuration dictionary to override defaults.
+        seed : int | None
+            Random seed for reproducibility.
+        """
         super().__init__()
         self.cfg = _merge_defaults(self.DEFAULTS, dataset_cfg)
         self.data_dir = Path(self.cfg['data_dir'])
 
-        self.file_stems: list[str] = self.cfg['files'] or list(self.ALL_FILES.keys())
+        # File stems to load - controls which measurement campaigns to use
+        # Each stem corresponds to one TFRecord file
+        self.file_stems: list[str] = self.cfg['files']
 
-        self.n_bs: int = int(self.cfg['n_bs'])
+        # Base station configuration
+        self.base_stations: list[int] = list(self.cfg.get('base_stations', [0, 1, 2]))
+        self.n_bs: int = len(self.base_stations)
         self.antennas_per_bs: int = int(self.cfg['antennas_per_bs'])
-        self.total_antennas: int = self.n_bs * self.antennas_per_bs
+        # Total antennas is still n_bs * antennas_per_bs (for slicing CSI)
+        # Note: The raw data has 32 antennas (4 BSs × 8), we slice to get only selected BSs
+        self.total_antennas: int = 32  # Raw DICHASUS cf0x has 32 antennas total
 
+        # Time-coherence parameters for positive/negative pair selection
         self.Tc_pos = float(self.cfg['Tc_pos'])
         self.Tc_neg = float(self.cfg['Tc_neg'])
         self.preprocess: str = self.cfg.get('preprocess', 'dichasus')
+
+        # Number of agents equals number of base stations
         self.n_agents: int = self.n_bs
         self.feature_dim: int | None = None
 
-        self.edge_set: list[tuple[int, int]] = [tuple(e) for e in self.cfg.get('edge_set', [])]
+        # BS pairs for shared (inter-BS alignment) loss
+        # Filter edge_set to only include pairs where both BSs are in base_stations
+        raw_edge_set: list = self.cfg.get('edge_set', [])
+        self.edge_set: list[tuple[int, int]] = []
+        for e in raw_edge_set:
+            bs1, bs2 = tuple(e)
+            if bs1 in self.base_stations and bs2 in self.base_stations:
+                self.edge_set.append((bs1, bs2))
 
-        self._train_files: list[str] | None = self.cfg.get('train_files')
-        self._val_files: list[str] | None = self.cfg.get('val_files')
-        self._test_files: list[str] | None = self.cfg.get('test_files')
-
+        # Random number generator for pair selection
         self.rng = np.random.default_rng(seed)
 
+        # Validate configuration
         assert self.Tc_neg > self.Tc_pos, '"Tc_neg" must be greater than "Tc_pos"'
 
-    # ------------------------------------------------------------------
-    # Lightning: prepare_data
-    # ------------------------------------------------------------------
-
     def prepare_data(self) -> None:
-        """Download TFRecord files (DaRUS) and calibration offset JSONs (DICHASUS site)."""
+        """Download TFRecord files and calibration offsets.
+
+        This method runs once on the main process before any workers start.
+        It downloads:
+        - TFRecord files from DaRUS (DOI-based URLs)
+        - Calibration offset JSONs from DICHASUS website (STO/CPO corrections)
+
+        Files are only downloaded if they don't already exist in data_dir.
+        """
+        # Base URL for DaRUS API
         darus_base = (
             'https://darus.uni-stuttgart.de/api/access/datafile/:persistentId?persistentId='
         )
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        from tqdm import tqdm
-
+        # Download each selected file
         for stem in self.file_stems:
-            # TFRecord from DaRUS
+            # TFRecord file (the main CSI data)
             tfrecords_dest = self.data_dir / f'{stem}.tfrecords'
             if not tfrecords_dest.exists():
-                self._download(darus_base + self.ALL_FILES[stem], tfrecords_dest, tqdm)
+                self._download(darus_base + self.ALL_FILES[stem], tfrecords_dest)
 
-            # Offset JSON from DICHASUS website
+            # Calibration offsets (STO/CPO corrections)
             offsets_dest = self.data_dir / f'reftx-offsets-{stem}.json'
             if not offsets_dest.exists():
                 self._download(
                     self._OFFSETS_BASE_URL + f'reftx-offsets-{stem}.json',
                     offsets_dest,
-                    tqdm,
                 )
 
     @staticmethod
-    def _download(url: str, dest: Path, tqdm_cls) -> None:
+    def _download(url: str, dest: Path) -> None:
+        """Download a file with progress bar.
+
+        Parameters
+        ----------
+        url : str
+            URL to download from.
+        dest : Path
+            Destination file path.
+        """
         r = requests.get(url, stream=True, verify=False)
         r.raise_for_status()
         total = int(r.headers.get('content-length', 0))
         with (
             open(dest, 'wb') as f,
-            tqdm_cls(total=total, unit='B', unit_scale=True, desc=dest.name) as bar,
+            tqdm(total=total, unit='B', unit_scale=True, desc=dest.name) as bar,
         ):
-            for chunk in r.iter_content(chunk_size=1 << 20):
+            for chunk in r.iter_content(chunk_size=1 << 20):  # 1MB chunks
                 f.write(chunk)
                 bar.update(len(chunk))
 
-    # ------------------------------------------------------------------
-    # TFRecord parsing + calibration
-    # ------------------------------------------------------------------
-
-    def _parse_tfrecord(
+    def _parse_tfrecord_timestamps(
         self,
         stem: str,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Load and calibrate one DICHASUS TFRecord file.
+    ) -> tuple[np.ndarray, int, dict[str, int]]:
+        """Parse only timestamps from a TFRecord file (not CSI).
+
+        This is used to build the positive/negative index mapping without
+        loading all the CSI data into memory.
 
         Parameters
         ----------
         stem : str
-            File stem, e.g. ``'dichasus-cf02'``.
+            File stem (e.g., 'dichasus-cf02').
 
         Returns
         -------
-        csi : np.ndarray, shape (N, total_antennas, 1, 1024), complex64
-            Calibrated channel matrices.  The size-1 axis is the T (transmit)
-            dimension expected by ``csi_to_realvec``.
-        positions : np.ndarray, shape (N, 2), float64
-            XY ground-truth positions from tachymeter.
-        timestamps : np.ndarray, shape (N,), float32
-            Sorted recording timestamps (seconds).
+        tuple
+            (timestamps, count, file_offset) where:
+            - timestamps: sorted array of timestamps
+            - count: number of records
+            - file_offset: dict with file offset (always 0 for single file)
         """
-        import tensorflow as tf  # deferred import — TF is not required at module load
-
         tfrecords_path = str(self.data_dir / f'{stem}.tfrecords')
-        offsets_path = self.data_dir / f'reftx-offsets-{stem}.json'
 
-        offsets = None
-        if offsets_path.exists():
-            with open(offsets_path) as f:
-                offsets = json.load(f)
+        # Describe the record structure for tfrecord library
+        description = {
+            'csi': 'byte',
+            'pos-tachy': 'byte',
+            'time': 'float',
+        }
+        loader = tfrecord.tfrecord_loader(tfrecords_path, None, description)
 
-        total_ant = self.total_antennas
-        subcarriers = 1024
-
-        def _parse(proto):
-            record = tf.io.parse_single_example(
-                proto,
-                {
-                    'csi': tf.io.FixedLenFeature([], tf.string, default_value=''),
-                    'pos-tachy': tf.io.FixedLenFeature([], tf.string, default_value=''),
-                    'time': tf.io.FixedLenFeature([], tf.float32, default_value=0),
-                },
-            )
-            csi = tf.ensure_shape(
-                tf.io.parse_tensor(record['csi'], out_type=tf.float32),
-                (total_ant, subcarriers, 2),
-            )
-            csi = tf.complex(csi[:, :, 0], csi[:, :, 1])
-            csi = tf.signal.fftshift(csi, axes=1)
-            position = tf.ensure_shape(
-                tf.io.parse_tensor(record['pos-tachy'], out_type=tf.float64), (3,)
-            )
-            time = tf.ensure_shape(record['time'], ())
-            return csi, position[:2], time
-
-        dataset = tf.data.TFRecordDataset(tfrecords_path).map(
-            _parse, num_parallel_calls=tf.data.AUTOTUNE
-        )
-
-        # STO/CPO phase calibration (per antenna × per subcarrier)
-        if offsets is not None:
-
-            def _calibrate(csi, pos, time):
-                sc_idx = tf.cast(tf.range(subcarriers), tf.float32)
-                sto_offset = tf.tensordot(
-                    tf.constant(offsets['sto'], dtype=tf.float32),
-                    2.0 * np.pi * sc_idx / subcarriers,
-                    axes=0,
-                )
-                cpo_offset = tf.tensordot(
-                    tf.constant(offsets['cpo'], dtype=tf.float32),
-                    tf.ones(subcarriers, dtype=tf.float32),
-                    axes=0,
-                )
-                csi = csi * tf.exp(tf.complex(tf.zeros_like(sto_offset), sto_offset + cpo_offset))
-                return csi, pos, time
-
-            dataset = dataset.map(_calibrate, num_parallel_calls=tf.data.AUTOTUNE)
-
-        csi_list, pos_list, time_list = [], [], []
-        for csi, pos, time in dataset:
-            csi_list.append(csi.numpy())  # (total_ant, 1024) complex64
-            pos_list.append(pos.numpy())  # (2,) float64
-            time_list.append(time.numpy())  # float32 scalar
-
-        # Stack, then insert the T=1 transmit-antenna axis
-        # Shape: (N, total_antennas, 1, 1024) — matches (N, R, T, F) convention
-        csi_arr = np.stack(csi_list, axis=0)[:, :, np.newaxis, :]  # complex64
-        positions = np.stack(pos_list, axis=0)  # float64
-        timestamps = np.array(time_list, dtype=np.float32)
-
+        # Extract only timestamps (much smaller than full CSI data)
+        timestamps_arr = np.array([record['time'].item() for record in loader], dtype=np.float32)
         # Sort by timestamp (measurements may have minor reordering)
-        order = np.argsort(timestamps)
-        return csi_arr[order], positions[order], timestamps[order]
+        timestamps_arr = np.sort(timestamps_arr)
 
-    # ------------------------------------------------------------------
-    # Positive/negative pair construction
-    # ------------------------------------------------------------------
+        file_offset = {stem: 0}
+
+        return timestamps_arr, len(timestamps_arr), file_offset
 
     def _build_idx_to_neg_pos(
         self,
@@ -322,31 +807,28 @@ class DICHASUSDataModule(l.LightningDataModule):
         global_offset: int,
         rng: np.random.Generator,
     ) -> dict[tuple[int, int], dict[str, np.ndarray]]:
-        """Build the positive/negative lookup dict for one measurement file.
+        """Build positive/negative index mapping based on time-coherence.
 
-        Uses binary search on sorted timestamps → O(N log N).
+        Uses binary search on sorted timestamps for O(N log N) complexity.
 
-        Positives  : j s.t. |t_j − t_i| ≤ Tc_pos  (j ≠ i)
-        Negatives  : j s.t. Tc_pos < |t_j − t_i| ≤ Tc_neg
-
-        ``file_id`` is used as the user_id key so entries from different files
-        never collide, matching the (user_id, anchor_idx) key format of
-        ``TrajectoryCSIDataset``.
+        Positive samples: |Δt| ≤ Tc_pos (samples close in time)
+        Negative samples: Tc_pos < |Δt| ≤ Tc_neg (samples far enough in time)
 
         Parameters
         ----------
-        timestamps : np.ndarray, shape (N,)
-            Already sorted timestamps for this file.
+        timestamps : np.ndarray
+            Sorted timestamps for all samples.
         file_id : int
-            Index of this file within the current split (used as user_id).
+            File ID to use as user_id (for cross-file isolation).
         global_offset : int
-            Index of the first sample of this file in the concatenated array.
+            Offset to add to local indices for global indexing.
         rng : np.random.Generator
-            For optional subsampling when n_pos / n_neg are set.
+            Random generator for optional subsampling.
 
         Returns
         -------
-        dict mapping (file_id, global_anchor_idx) → {'pos': ndarray, 'neg': ndarray}
+        dict
+            Mapping from (file_id, global_idx) to {'pos': pos_indices, 'neg': neg_indices}
         """
         N = len(timestamps)
         n_pos = self.cfg.get('n_pos')
@@ -356,16 +838,19 @@ class DICHASUSDataModule(l.LightningDataModule):
         for i in range(N):
             t = timestamps[i]
 
+            # Find positive samples: within Tc_pos time window
             lo_pos = int(np.searchsorted(timestamps, t - self.Tc_pos, side='left'))
             hi_pos = int(np.searchsorted(timestamps, t + self.Tc_pos, side='right'))
             pos_local = np.arange(lo_pos, hi_pos, dtype=np.int64)
-            pos_local = pos_local[pos_local != i]
+            pos_local = pos_local[pos_local != i]  # Exclude self
 
+            # Find negative samples: outside Tc_pos but within Tc_neg
             lo_neg = int(np.searchsorted(timestamps, t - self.Tc_neg, side='left'))
             hi_neg = int(np.searchsorted(timestamps, t + self.Tc_neg, side='right'))
             neg_candidates = np.arange(lo_neg, hi_neg, dtype=np.int64)
             neg_local = neg_candidates[(neg_candidates < lo_pos) | (neg_candidates >= hi_pos)]
 
+            # Skip if not enough samples
             if len(pos_local) == 0 or len(neg_local) == 0:
                 continue
             if n_pos is not None and len(pos_local) < n_pos:
@@ -373,11 +858,13 @@ class DICHASUSDataModule(l.LightningDataModule):
             if n_neg is not None and len(neg_local) < n_neg:
                 continue
 
+            # Random subsample if n_pos/n_neg specified
             if n_pos is not None:
                 pos_local = rng.choice(pos_local, size=n_pos, replace=False)
             if n_neg is not None:
                 neg_local = rng.choice(neg_local, size=n_neg, replace=False)
 
+            # Convert to global indices
             global_i = global_offset + i
             idx_to_neg_pos[(file_id, global_i)] = {
                 'pos': pos_local + global_offset,
@@ -386,328 +873,277 @@ class DICHASUSDataModule(l.LightningDataModule):
 
         return idx_to_neg_pos
 
-    # ------------------------------------------------------------------
-    # Dataset construction (mirrors DeepMimoDataModule._shared_gen)
-    # ------------------------------------------------------------------
-
-    def _build_split(
+    def _build_file_record_map(
         self,
         stems: list[str],
-        rng: np.random.Generator,
-    ) -> tuple[
-        dict[int, TrajectoryCSIDataset],
-        dict[tuple[int, int], SharedTrajectoryCSIDataset],
-        dict,
-    ]:
-        """Load a list of TFRecord files and build local + shared datasets.
+    ) -> tuple[dict[int, tuple[str, int]], np.ndarray, dict[str, int]]:
+        """Build the lazy loading index mapping.
 
-        Each BS ``k`` gets a ``TrajectoryCSIDataset`` whose channels are the
-        antenna slice ``[:, k*apb:(k+1)*apb, :, :]``.
-
-        Since all BSs observe the same UE positions simultaneously,
-        ``valid_idxs`` is identical for all BSs and ``shared_traj_idxs``
-        for a BS pair equals all anchor indices.
+        This creates a mapping from global sample index to (file_path, record_index).
+        This is the core of lazy loading - we know WHERE each sample is without
+        loading the actual CSI data.
 
         Parameters
         ----------
         stems : list[str]
-            File stems to load.
-        rng : np.random.Generator
-            For pair subsampling.
+            List of file stems to process.
 
         Returns
         -------
-        local_datasets : dict[int, TrajectoryCSIDataset]
-        shared_datasets : dict[tuple[int,int], SharedTrajectoryCSIDataset]
-        idx_to_neg_pos : dict
+        tuple
+            (file_record_map, timestamps_all, file_offsets) where:
+            - file_record_map: dict mapping global_idx -> (tfrecord_path, record_idx)
+              Indices are sorted by timestamp for time-coherence calculations
+            - timestamps_all: concatenated timestamps from all files (sorted)
+            - file_offsets: dict mapping stem -> starting global_idx
         """
-        all_csi: list[np.ndarray] = []
-        all_pos: list[np.ndarray] = []
-        all_ts: list[np.ndarray] = []
+        file_record_map: dict[int, tuple[str, int]] = {}
+        all_timestamps: list[np.ndarray] = []
+        file_offsets: dict[str, int] = {}
+        global_idx = 0
 
         for stem in stems:
-            csi, pos, ts = self._parse_tfrecord(stem)
-            all_csi.append(csi)
-            all_pos.append(pos)
-            all_ts.append(ts)
+            tfrecords_path = str(self.data_dir / f'{stem}.tfrecords')
+            file_offsets[stem] = global_idx
 
-        # Concatenated arrays: (N_total, total_antennas, 1, 1024)
-        channels_all = np.concatenate(all_csi, axis=0)
-        rx_pos = np.concatenate(all_pos, axis=0)  # (N_total, 2)
+            description = {
+                'csi': 'byte',
+                'pos-tachy': 'byte',
+                'time': 'float',
+            }
+            loader = tfrecord.tfrecord_loader(tfrecords_path, None, description)
 
-        # Build idx_to_neg_pos per file (no cross-file pairs)
-        idx_to_neg_pos: dict = {}
-        offset = 0
-        for file_id, (csi_chunk, ts_chunk) in enumerate(zip(all_csi, all_ts)):
-            file_map = self._build_idx_to_neg_pos(ts_chunk, file_id, offset, rng)
-            idx_to_neg_pos.update(file_map)
-            offset += len(ts_chunk)
+            # Single pass: build index mapping AND collect timestamps
+            # (avoids re-reading the file twice)
+            file_timestamps = []
+            for record_idx, record in enumerate(loader):
+                file_record_map[global_idx] = (tfrecords_path, record_idx)
+                # Time is returned as array (1,), extract scalar
+                file_timestamps.append(float(record['time'].item()))
+                global_idx += 1
 
-        N_total = len(channels_all)
-        valid_idxs = np.arange(N_total, dtype=np.int64)  # all BSs see all positions
-        apb = self.antennas_per_bs
+            # Convert timestamps to array (flatten to ensure 1D)
+            all_timestamps.append(np.array(file_timestamps, dtype=np.float32).ravel())
 
-        # Per-BS local datasets: slice the antenna dimension
-        local_datasets: dict[int, TrajectoryCSIDataset] = {}
-        for bs_id in range(self.n_bs):
-            channels_bs = channels_all[:, bs_id * apb : (bs_id + 1) * apb, :, :]
-            local_datasets[bs_id] = TrajectoryCSIDataset(
-                idx_to_neg_pos=idx_to_neg_pos,
-                valid_idxs=valid_idxs,
-                rx_pos=rx_pos,
-                channels=channels_bs,
-                pair_mode=self.cfg['pair_mode'],
-                p_positive=float(self.cfg['p_positive']),
-                preprocess=self.preprocess,
-            )
+        # Concatenate all timestamps and ensure 1D
+        timestamps_all = np.concatenate(all_timestamps).ravel()
 
-        # Shared datasets: all anchor positions are shared (simultaneous capture)
-        shared_datasets: dict[tuple[int, int], SharedTrajectoryCSIDataset] = {}
-        all_anchor_idxs = np.unique([anchor for (_, anchor) in idx_to_neg_pos])
+        # Sort by timestamp and reorder file_record_map accordingly
+        # This is critical for time-coherence calculations
+        sort_idx = np.argsort(timestamps_all)
+        timestamps_all = timestamps_all[sort_idx]
 
-        for bs_1, bs_2 in self.edge_set:
-            if len(all_anchor_idxs) == 0:
-                continue
+        # Reindex file_record_map to sorted order
+        sorted_file_record_map: dict[int, tuple[str, int]] = {}
+        for new_idx, old_idx in enumerate(sort_idx):
+            sorted_file_record_map[new_idx] = file_record_map[old_idx]
 
-            shared_pos = rx_pos[all_anchor_idxs]
-            channels_bs_1 = channels_all[all_anchor_idxs, bs_1 * apb : (bs_1 + 1) * apb, :, :]
-            channels_bs_2 = channels_all[all_anchor_idxs, bs_2 * apb : (bs_2 + 1) * apb, :, :]
+        return sorted_file_record_map, timestamps_all, file_offsets
 
-            shared_datasets[(bs_1, bs_2)] = SharedTrajectoryCSIDataset(
-                idx_bs_1=bs_1,
-                idx_bs_2=bs_2,
-                shared_pos=shared_pos,
-                channels_bs_1=channels_bs_1,
-                channels_bs_2=channels_bs_2,
-                shared_traj_idxs=all_anchor_idxs,
-                preprocess=self.preprocess,
-            )
-
-        return local_datasets, shared_datasets, idx_to_neg_pos
-
-    # ------------------------------------------------------------------
-    # Lightning: setup
-    # ------------------------------------------------------------------
-
-    def _load_all_files(
+    def _build_split(
         self,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-        """Load all TFRecord files and concatenate them into one dataset.
+        stems: list[str],
+        split_indices: dict[str, np.ndarray],
+        rng: np.random.Generator,
+    ) -> tuple[
+        dict[int, LazyDICHASUSTrajectoryDataset],
+        dict[tuple[int, int], LazyDICHASUSSharedDataset],
+        dict,
+    ]:
+        """Build datasets for a specific split (train/val/test).
+
+        Creates both local (per-BS) and shared (inter-BS) datasets.
+
+        Parameters
+        ----------
+        stems : list[str]
+            File stems to use.
+        split_indices : dict
+            Dict with 'train' key containing indices for this split.
+        rng : np.random.Generator
+            Random generator for pair selection.
 
         Returns
         -------
-        channels_all : np.ndarray, shape (N_total, total_antennas, 1, 1024)
-        rx_pos : np.ndarray, shape (N_total, 2)
-        timestamps_all : np.ndarray, shape (N_total,)
-        idx_to_neg_pos : dict
+        tuple
+            (local_datasets, shared_datasets, idx_to_neg_pos)
         """
-        all_csi: list[np.ndarray] = []
-        all_pos: list[np.ndarray] = []
-        all_ts: list[np.ndarray] = []
+        # Build file record map (lazy loading index)
+        file_record_map, timestamps_all, file_offsets = self._build_file_record_map(stems)
 
-        for stem in self.file_stems:
-            csi, pos, ts = self._parse_tfrecord(stem)
-            all_csi.append(csi)
-            all_pos.append(pos)
-            all_ts.append(ts)
-
-        channels_all = np.concatenate(all_csi, axis=0)
-        rx_pos = np.concatenate(all_pos, axis=0)
-        timestamps_all = np.concatenate(all_ts, axis=0)
-
-        rng = np.random.default_rng(self.cfg['train_seed'])
+        # Build positive/negative index mapping
         idx_to_neg_pos = self._build_idx_to_neg_pos(
             timestamps_all, file_id=0, global_offset=0, rng=rng
         )
 
-        return channels_all, rx_pos, timestamps_all, idx_to_neg_pos
+        # All indices are valid (no BS-specific filtering in DICHASUS)
+        N_total = len(timestamps_all)
+        valid_idxs = np.arange(N_total, dtype=np.int64)
 
-    def _build_datasets_from_concatenated(
-        self,
-        channels_all: np.ndarray,
-        rx_pos: np.ndarray,
-        idx_to_neg_pos: dict,
-        split_indices: dict[str, np.ndarray],
-    ) -> tuple[
-        dict[int, TrajectoryCSIDataset],
-        dict[tuple[int, int], SharedTrajectoryCSIDataset],
-        dict,
-    ]:
-        """Build local and shared datasets from concatenated data using split indices.
-
-        Parameters
-        ----------
-        channels_all : np.ndarray
-            Full concatenated CSI array.
-        rx_pos : np.ndarray
-            Full concatenated positions.
-        idx_to_neg_pos : dict
-            Full positive/negative index mapping.
-        split_indices : dict
-            Dict with 'train', 'val', 'test' keys, each containing np.ndarray of indices.
-
-        Returns
-        -------
-        local_datasets : dict[int, TrajectoryCSIDataset]
-        shared_datasets : dict[tuple[int,int], SharedTrajectoryCSIDataset]
-        traj_dict : dict
-        """
         apb = self.antennas_per_bs
+        local_datasets: dict[int, LazyDICHASUSTrajectoryDataset] = {}
 
-        local_datasets: dict[int, TrajectoryCSIDataset] = {}
-        for bs_id in range(self.n_bs):
-            channels_bs = channels_all[:, bs_id * apb : (bs_id + 1) * apb, :, :]
-            local_datasets[bs_id] = TrajectoryCSIDataset(
+        # Create one dataset per selected base station
+        for bs_id in self.base_stations:
+            # Use first file's calibration (assumes similar offsets across files)
+            offsets_path = str(self.data_dir / f'reftx-offsets-{stems[0]}.json')
+            if len(stems) > 1:
+                # Multiple files - calibration would need merging
+                offsets_path = None
+
+            local_datasets[bs_id] = LazyDICHASUSTrajectoryDataset(
                 idx_to_neg_pos=idx_to_neg_pos,
-                valid_idxs=split_indices['train'],
-                rx_pos=rx_pos,
-                channels=channels_bs,
+                valid_idxs=split_indices.get('train', valid_idxs),
+                file_record_map=file_record_map,
+                timestamps=timestamps_all,
+                file_offsets=file_offsets,
+                antennas_per_bs=apb,
+                n_bs=self.n_bs,
+                bs_id=bs_id,
                 pair_mode=self.cfg['pair_mode'],
                 p_positive=float(self.cfg['p_positive']),
                 preprocess=self.preprocess,
+                offsets_path=offsets_path,
             )
 
-        shared_datasets: dict[tuple[int, int], SharedTrajectoryCSIDataset] = {}
+        # Create shared datasets for BS pairs (if configured)
+        shared_datasets: dict[tuple[int, int], LazyDICHASUSSharedDataset] = {}
         all_anchor_idxs = np.unique([anchor for (_, anchor) in idx_to_neg_pos])
-        train_anchor_idxs = all_anchor_idxs[np.isin(all_anchor_idxs, split_indices['train'])]
+
+        # Filter to only anchors in this split
+        train_anchor_idxs = all_anchor_idxs[
+            np.isin(all_anchor_idxs, split_indices.get('train', all_anchor_idxs))
+        ]
 
         for bs_1, bs_2 in self.edge_set:
             if len(train_anchor_idxs) == 0:
                 continue
 
-            shared_pos = rx_pos[train_anchor_idxs]
-            channels_bs_1 = channels_all[train_anchor_idxs, bs_1 * apb : (bs_1 + 1) * apb, :, :]
-            channels_bs_2 = channels_all[train_anchor_idxs, bs_2 * apb : (bs_2 + 1) * apb, :, :]
+            # Same calibration handling as local datasets
+            offsets_path = str(self.data_dir / f'reftx-offsets-{stems[0]}.json')
+            if len(stems) > 1:
+                offsets_path = None
 
-            shared_datasets[(bs_1, bs_2)] = SharedTrajectoryCSIDataset(
+            shared_datasets[(bs_1, bs_2)] = LazyDICHASUSSharedDataset(
+                shared_global_idxs=train_anchor_idxs,
+                file_record_map=file_record_map,
+                antennas_per_bs=apb,
+                n_bs=self.n_bs,
                 idx_bs_1=bs_1,
                 idx_bs_2=bs_2,
-                shared_pos=shared_pos,
-                channels_bs_1=channels_bs_1,
-                channels_bs_2=channels_bs_2,
-                shared_traj_idxs=train_anchor_idxs,
                 preprocess=self.preprocess,
+                offsets_path=offsets_path,
             )
 
         return local_datasets, shared_datasets, idx_to_neg_pos
 
     def setup(self, stage: str | None = None) -> None:
-        """Load TFRecord files and construct train/val/test datasets.
+        """Set up the data module for training/validation/testing.
 
-        Populates:
-        - ``train/val/test_local_dataset``   : ``{bs_id: TrajectoryCSIDataset}``
-        - ``train/val/test_shared_dataset``  : ``{(bs1, bs2): SharedTrajectoryCSIDataset}``
-        - ``train/val/test_traj_dict``       : idx_to_neg_pos dicts
-        - ``feature_dim``                    : int
+        This method:
+        1. Builds the file record map (lazy loading index)
+        2. Creates train/val/test splits at sample level
+        3. Creates LazyDICHASUSTrajectoryDataset for each BS
+        4. Creates LazyDICHASUSSharedDataset for each BS pair in edge_set
+        5. Computes feature_dim from a sample
+
+        Parameters
+        ----------
+        stage : str | None
+            'train', 'val', 'test', or None (setup all)
         """
         if getattr(self, '_setup_done', False):
             return
 
+        # Get split ratios
         train_split = self.cfg.get('train_split')
         val_split = self.cfg.get('val_split')
         test_split = self.cfg.get('test_split')
 
+        # Sample-level split (train/val/test from same files)
         if train_split is not None and val_split is not None and test_split is not None:
-            channels_all, rx_pos, timestamps_all, idx_to_neg_pos = self._load_all_files()
+            # Build file record map (lazy - only builds index, not CSI data)
+            file_record_map, timestamps_all, file_offsets = self._build_file_record_map(
+                self.file_stems
+            )
 
-            N_total = len(channels_all)
+            # Create random permutation of indices
+            N_total = len(timestamps_all)
             all_indices = np.arange(N_total, dtype=np.int64)
 
             rng = np.random.default_rng(self.cfg['train_seed'])
             rng.shuffle(all_indices)
 
+            # Compute split boundaries
             n_train = int(train_split * N_total)
             n_val = int(val_split * N_total)
 
+            # Extract indices for each split
             train_indices = all_indices[:n_train]
             val_indices = all_indices[n_train : n_train + n_val]
             test_indices = all_indices[n_train + n_val :]
 
-            split_indices = {
-                'train': train_indices,
-                'val': val_indices,
-                'test': test_indices,
-            }
-
+            # Build datasets for each split
+            # Note: Each split gets its own dataset with filtered valid_idxs
+            # But they share the same file_record_map (lazy loading works across splits)
             (
                 self.train_local_dataset,
                 self.train_shared_dataset,
                 self.train_traj_dict,
-            ) = self._build_datasets_from_concatenated(
-                channels_all, rx_pos, idx_to_neg_pos, {'train': train_indices}
-            )
+            ) = self._build_split(self.file_stems, {'train': train_indices}, rng)
 
             (
                 self.val_local_dataset,
                 self.val_shared_dataset,
                 self.val_traj_dict,
-            ) = self._build_datasets_from_concatenated(
-                channels_all, rx_pos, idx_to_neg_pos, {'train': val_indices}
-            )
+            ) = self._build_split(self.file_stems, {'train': val_indices}, rng)
 
             (
                 self.test_local_dataset,
                 self.test_shared_dataset,
                 self.test_traj_dict,
-            ) = self._build_datasets_from_concatenated(
-                channels_all, rx_pos, idx_to_neg_pos, {'train': test_indices}
-            )
+            ) = self._build_split(self.file_stems, {'train': test_indices}, rng)
 
-        else:
-            train_stems = self._train_files
-            val_stems = self._val_files
-            test_stems = self._test_files
-
-            if train_stems is None and val_stems is None and test_stems is None:
-                n = len(self.file_stems)
-                n_train = max(1, int(round(0.7 * n)))
-                n_val = max(1, (n - n_train) // 2)
-                train_stems = self.file_stems[:n_train]
-                val_stems = self.file_stems[n_train : n_train + n_val]
-                test_stems = self.file_stems[n_train + n_val :] or self.file_stems[-1:]
-
-            if train_stems is None:
-                raise ValueError('train_files must be specified for file-level split')
-            if val_stems is None:
-                raise ValueError('val_files must be specified for file-level split')
-            if test_stems is None:
-                raise ValueError('test_files must be specified for file-level split')
-
-            (
-                self.train_local_dataset,
-                self.train_shared_dataset,
-                self.train_traj_dict,
-            ) = self._build_split(train_stems, np.random.default_rng(self.cfg['train_seed']))
-
-            (
-                self.val_local_dataset,
-                self.val_shared_dataset,
-                self.val_traj_dict,
-            ) = self._build_split(val_stems, np.random.default_rng(self.cfg['val_seed']))
-
-            (
-                self.test_local_dataset,
-                self.test_shared_dataset,
-                self.test_traj_dict,
-            ) = self._build_split(test_stems, np.random.default_rng(self.cfg['test_seed']))
-
-        sample_csi = torch.from_numpy(self.train_local_dataset[0].channels[0])
+        # Compute feature dimension from a sample
+        # This triggers the first lazy load (and caching)
+        sample_csi = self.train_local_dataset[0]._H_from_global_index(
+            list(self.train_local_dataset[0].idx_to_neg_pos.values())[0]['pos'][0]
+        )
         self.feature_dim = csi_to_realvec(sample_csi, method=self.preprocess).shape[0]
 
         self._setup_done = True
 
-    # ------------------------------------------------------------------
-    # Lightning: dataloaders
-    # ------------------------------------------------------------------
-
     def _make_loaders(
         self,
-        local: dict[int, TrajectoryCSIDataset],
-        shared: dict[tuple[int, int], SharedTrajectoryCSIDataset],
+        local: dict[int, LazyDICHASUSTrajectoryDataset],
+        shared: dict[tuple[int, int], LazyDICHASUSSharedDataset],
         shuffle: bool = False,
         drop_last: bool = False,
     ) -> CombinedLoader:
+        """Create CombinedLoader from local and shared datasets.
+
+        CombinedLoader handles multiple DataLoaders and iterates them
+        in lockstep (min_size mode) or independently.
+
+        Parameters
+        ----------
+        local : dict[int, LazyDICHASUSTrajectoryDataset]
+            Per-BS datasets.
+        shared : dict[tuple[int, int], LazyDICHASUSSharedDataset]
+            Inter-BS datasets.
+        shuffle : bool
+            Whether to shuffle (typically False for train).
+        drop_last : bool
+            Whether to drop last incomplete batch.
+
+        Returns
+        -------
+        CombinedLoader
+            Combined loader containing all datasets.
+        """
         loaders: dict = {}
+
+        # Create DataLoader for each BS
         for bs_id, ds in local.items():
             loaders[bs_id] = DataLoader(
                 ds,
@@ -717,6 +1153,8 @@ class DICHASUSDataModule(l.LightningDataModule):
                 num_workers=self.cfg['num_workers'],
                 pin_memory=self.cfg['pin_memory'],
             )
+
+        # Create DataLoader for each BS pair
         for (bs_1, bs_2), ds in shared.items():
             loaders[(bs_1, bs_2)] = DataLoader(
                 ds,
@@ -726,18 +1164,41 @@ class DICHASUSDataModule(l.LightningDataModule):
                 num_workers=self.cfg['num_workers'],
                 pin_memory=self.cfg['pin_memory'],
             )
-        return CombinedLoader(loaders, mode='min_size')
+
+        # max_size_cycle: iterate all loaders, cycle when any is exhausted
+        return CombinedLoader(loaders, mode='max_size_cycle')
 
     def train_dataloader(self) -> CombinedLoader:
+        """Create training dataloader.
+
+        Returns
+        -------
+        CombinedLoader
+            Combined loader with shuffle enabled, drop_last enabled.
+        """
         return self._make_loaders(
             self.train_local_dataset,
             self.train_shared_dataset,
-            shuffle=False,
-            drop_last=True,
+            shuffle=False,  # Shuffling handled by dataset's idx_to_neg_pos
+            drop_last=True,  # Avoid incomplete batches in loss computation
         )
 
     def val_dataloader(self) -> CombinedLoader:
+        """Create validation dataloader.
+
+        Returns
+        -------
+        CombinedLoader
+            Combined loader without shuffling.
+        """
         return self._make_loaders(self.val_local_dataset, self.val_shared_dataset)
 
     def test_dataloader(self) -> CombinedLoader:
+        """Create test dataloader.
+
+        Returns
+        -------
+        CombinedLoader
+            Combined loader without shuffling.
+        """
         return self._make_loaders(self.test_local_dataset, self.test_shared_dataset)

@@ -8,3 +8,4 @@ encoder_split: 0.5
 decoder_split: 0.5
 transition_epoch: null
 steepness: 0.1
+n_clusters: 4

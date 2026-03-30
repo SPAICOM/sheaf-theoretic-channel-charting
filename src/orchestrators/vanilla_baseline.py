@@ -63,6 +63,7 @@ class VanillaCC(BaseOrchestrator):
         lmb_schedule: str = 'cosine',
         transition_epoch: float | None = None,
         steepness: float = 0.1,
+        n_clusters: int | None = None,
     ) -> None:
         super().__init__(
             agents=agents,
@@ -71,6 +72,7 @@ class VanillaCC(BaseOrchestrator):
             lr=lr,
             transition_epoch=transition_epoch,
             steepness=steepness,
+            n_clusters=n_clusters,
         )
 
     def _shared_eval(
@@ -160,8 +162,18 @@ class VanillaCC(BaseOrchestrator):
         -------
         None
         """
-        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
-        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
+        self.plot_latent_space(
+            split='test',
+            prefix='trajectory_test',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
 
     def _compute_FOSCTTM(self) -> None:
         pass

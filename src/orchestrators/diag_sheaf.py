@@ -20,6 +20,7 @@ class DiagSheafCC(BaseOrchestrator):
         lmb_log_barr: float = 1e-3,
         transition_epoch: float | None = None,
         steepness: float = 0.1,
+        n_clusters: int | None = None,
     ):
         super().__init__(
             agents=agents,
@@ -28,6 +29,7 @@ class DiagSheafCC(BaseOrchestrator):
             lr=lr,
             transition_epoch=transition_epoch,
             steepness=steepness,
+            n_clusters=n_clusters,
         )
         self._lmb = lmb_min
         self.hparams['lmb_log_barr'] = lmb_log_barr
@@ -107,8 +109,18 @@ class DiagSheafCC(BaseOrchestrator):
 
         self.diagonal_maps = diagonal_maps_temp
 
-        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
-        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
+        self.plot_latent_space(
+            split='test',
+            prefix='trajectory_test',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
 
     def _shared_eval(
         self,

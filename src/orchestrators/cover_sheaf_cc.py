@@ -19,10 +19,12 @@ class CoverSheafCC(BaseOrchestrator):
         lmb_schedule: str = 'cosine',
         transition_epoch: float | None = None,
         steepness: float = 0.1,
+        n_clusters: int | None = None,
     ):
         super().__init__(
             agents=agents,
             neighbors=neighbors,
+            n_clusters=n_clusters,
             weight_decay=weight_decay,
             lr=lr,
             transition_epoch=transition_epoch,
@@ -71,8 +73,18 @@ class CoverSheafCC(BaseOrchestrator):
     @torch.no_grad()
     def on_train_epoch_end(self):
         """Local reference frames fixed to identity — no alignment update."""
-        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
-        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
+        self.plot_latent_space(
+            split='test',
+            prefix='trajectory_test',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
 
     def _shared_eval(
         self,

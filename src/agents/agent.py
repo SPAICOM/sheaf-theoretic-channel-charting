@@ -112,8 +112,9 @@ class Encoder(nn.Module):
 
         # Apply BatchNorm + activation + Dropout to all layers except the last
         for i in range(self.num_hidden_layers - 1):
-            x = self.norm_layers[i](self.linear_layers[i](x))
+            x = self.linear_layers[i](x)
             x = self.act(x)
+            x = self.norm_layers[i](x)
             x = self.dropout_layers[i](x)
 
         # Final linear projection (no activation)
@@ -222,8 +223,9 @@ class Decoder(nn.Module):
 
         # Apply BatchNorm + activation + Dropout to all layers except the last
         for i in range(self.num_hidden_layers - 1):
-            x = self.norm_layers[i](self.layers[i](x))
+            x = self.layers[i](x)
             x = self.act(x)
+            x = self.norm_layers[i](x)
             x = self.dropout_layers[i](x)
 
         if shape_3d:

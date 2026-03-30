@@ -72,6 +72,7 @@ class BundleCC(BaseOrchestrator):
         lmb_schedule: str = 'cosine',
         transition_epoch: float | None = None,
         steepness: float = 0.1,
+        n_clusters: int | None = None,
     ) -> None:
         super().__init__(
             agents=agents,
@@ -80,6 +81,7 @@ class BundleCC(BaseOrchestrator):
             lr=lr,
             transition_epoch=transition_epoch,
             steepness=steepness,
+            n_clusters=n_clusters,
         )
         self._lmb = lmb_min
 
@@ -188,8 +190,18 @@ class BundleCC(BaseOrchestrator):
 
         self.orthogonal_maps = orthogonal_maps_temp
 
-        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
-        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
+        self.plot_latent_space(
+            split='test',
+            prefix='trajectory_test',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
 
     def _shared_eval(
         self,

@@ -1,7 +1,7 @@
 scenario: city_3_houston_3p5
 download: true
 
-batch_size: 16
+batch_size: 64
 num_workers: 0
 pin_memory: true
 
@@ -22,8 +22,8 @@ T_min: 8e3
 T_max: 9e3
 in_window: 10
 out_window: 100
-n_pos: 10
-n_neg: 10
+n_pos: 1
+n_neg: 1
 
 edge_set:
   - [1, 2]

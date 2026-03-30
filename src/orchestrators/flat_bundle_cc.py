@@ -13,13 +13,14 @@ class FlatBundleCC(BaseOrchestrator):
         agents: dict[int, nn.Module],
         neighbors: dict[int, set[int]],
         lr: float,
-        weight_decay: float,
+        weight_decay: float = 0.0,
         lmb_min: float = 1e-3,
         lmb_max: float = 1.0,
         lmb_schedule: str = 'cosine',
         transition_epoch: float | None = None,
         steepness: float = 0.1,
-    ):
+        n_clusters: int | None = None,
+    ) -> None:
         super().__init__(
             agents=agents,
             neighbors=neighbors,
@@ -27,6 +28,7 @@ class FlatBundleCC(BaseOrchestrator):
             lr=lr,
             transition_epoch=transition_epoch,
             steepness=steepness,
+            n_clusters=n_clusters,
         )
 
         self._lmb = lmb_min
@@ -123,8 +125,18 @@ class FlatBundleCC(BaseOrchestrator):
         # Update local reference frames
         self.local_reference_frames = local_reference_frames_temp
 
-        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
-        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
+        self.plot_latent_space(
+            split='test',
+            prefix='trajectory_test',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
 
     def _shared_eval(
         self,

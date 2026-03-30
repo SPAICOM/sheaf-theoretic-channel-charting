@@ -17,7 +17,6 @@ from lightning import Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
 
 from src.datamodules.deepmimo_single import SingleAgentDataModule
-from src.orchestrators.single_agent import SingleAgentModule
 from src.utils import remove_non_empty_dir
 
 
@@ -69,12 +68,10 @@ def main(cfg: DictConfig) -> None:
     # ===================================================
     agent = instantiate(cfg.model, in_dim=datamodule.feature_dim)
 
-    module = SingleAgentModule(
+    module = instantiate(
+        cfg.orchestrator,
         agent=agent,
-        lr=cfg.orchestrator.lr,
-        weight_decay=cfg.orchestrator.get('weight_decay', 0.0),
-        transition_epoch=cfg.orchestrator.get('transition_epoch', None),
-        steepness=cfg.orchestrator.get('steepness', 0.1),
+        _convert_='all',
     )
 
     # ===================================================

@@ -33,6 +33,7 @@ dependencies = [
     "torchvision>=0.17.0",
     "tqdm>=4.66",
     "wandb>=0.16",
+    "tfrecord[torch]>=1.14",
 ]
 
 [dependency-groups]

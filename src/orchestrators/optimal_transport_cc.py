@@ -46,6 +46,7 @@ class OptimalTransportCC(BaseOrchestrator):
         lmb_schedule: str = 'cosine',
         transition_epoch: float | None = None,
         steepness: float = 0.1,
+        n_clusters: int | None = None,
     ):
         super().__init__(
             agents=agents,
@@ -54,6 +55,7 @@ class OptimalTransportCC(BaseOrchestrator):
             lr=lr,
             transition_epoch=transition_epoch,
             steepness=steepness,
+            n_clusters=n_clusters,
         )
         self._lmb = lmb_min
         self.save_hyperparameters()
@@ -104,8 +106,18 @@ class OptimalTransportCC(BaseOrchestrator):
         self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_train_epoch_end(self) -> None:
-        self.plot_latent_space(split='test', prefix='trajectory_test', last_epoch_only=True)
-        self.plot_latent_space(split='train', prefix='trajectory_train', last_epoch_only=True)
+        self.plot_latent_space(
+            split='test',
+            prefix='trajectory_test',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
 
     def _shared_eval(
         self,

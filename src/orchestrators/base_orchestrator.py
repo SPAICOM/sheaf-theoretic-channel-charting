@@ -83,6 +83,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         weight_decay: float = 0.0,
         transition_epoch: float | None = None,
         steepness: float = 0.1,
+        n_clusters: int | None = None,
     ) -> None:
         super().__init__()
         # Save hyperparameters but exclude agent modules (they're tracked separately)
