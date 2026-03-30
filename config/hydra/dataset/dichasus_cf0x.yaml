@@ -25,11 +25,13 @@ test_split: 0.15
 # test_files:
 #   - dichasus-cf06
 
-# Which base stations to use (subset of 0-3)
-base_stations:
-  - 0
-  - 1
-  - 2
+# Virtual BS groups: each inner list is one virtual BS made of physical BS IDs.
+# Single-element lists = no aggregation (each physical BS is its own virtual BS).
+# n_agents = number of groups; feature_dim scales with group size.
+# No aggregation (4 independent BSs):
+bs_aggregation:
+  - [0, 1]
+  - [2, 3]
 
 # Number of antennas per base station
 antennas_per_bs: 8
@@ -47,15 +49,19 @@ Tc_pos: 1.5
 Tc_neg: 5.0
 
 pair_mode: triplet
-n_pos: 1
-n_neg: 1
+n_pos: 10
+n_neg: 10
 
 # BS-pair edges for shared (inter-BS alignment) datasets.
-# Chain topology across the 4 distributed access points.
+# Indices are virtual BS indices (0-indexed into bs_aggregation groups).
+# No-aggregation chain topology across 4 physical BSs:
 edge_set:
   - [0, 1]
   - [1, 2]
   - [2, 3]
+# With bs_aggregation [[0,1],[2,3]], use:
+# edge_set:
+#   - [0, 1]
 
 train_seed: 27
 val_seed: 123

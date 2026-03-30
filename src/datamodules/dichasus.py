@@ -128,7 +128,7 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         file_offsets: dict[str, int],
         antennas_per_bs: int,
         n_bs: int,
-        bs_id: int,
+        bs_ids: list[int],
         pair_mode: str = 'triplet',
         p_positive: float = 0.5,
         preprocess: str = 'dichasus',
@@ -154,7 +154,7 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         self.file_offsets = file_offsets
         self.antennas_per_bs = antennas_per_bs
         self.n_bs = n_bs
-        self.bs_id = bs_id
+        self.bs_ids = bs_ids
         self.total_antennas = antennas_per_bs * n_bs
 
         # Load STO/CPO calibration offsets if available
@@ -164,26 +164,30 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
             with open(offsets_path) as f:
                 self.offsets = json.load(f)
 
-        # Cache for loaded TFRecord data - avoids re-reading file for each sample
-        # Key: tfrecord_path, Value: list of all records in that file
-        self._tfrecord_cache: dict[str, list] = {}
+        # Cache for memory-mapped numpy arrays - avoids reopening files on every access
+        # Key: tfrecord_path, Value: (csi_mmap, pos_mmap, time_mmap)
+        self._mmap_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+    def _get_mmap(
+        self, tfrecord_path: str
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return memory-mapped arrays for a given TFRecord path, with caching."""
+        if tfrecord_path not in self._mmap_cache:
+            data_dir = Path(tfrecord_path).parent
+            stem = Path(tfrecord_path).stem
+            csi_mm = np.load(str(data_dir / f'{stem}_csi.npy'), mmap_mode='r')
+            pos_mm = np.load(str(data_dir / f'{stem}_pos.npy'), mmap_mode='r')
+            time_mm = np.load(str(data_dir / f'{stem}_time.npy'), mmap_mode='r')
+            self._mmap_cache[tfrecord_path] = (csi_mm, pos_mm, time_mm)
+        return self._mmap_cache[tfrecord_path]
 
     def _load_record(self, tfrecord_path: str, record_idx: int) -> tuple:
-        """Load a single record from TFRecord file, with caching.
-
-        This method implements lazy loading with a file-level cache:
-        1. Check if file is already in cache
-        2. If not, load the entire file into memory (future calls will be fast)
-        3. Return the specific record requested
-
-        The caching strategy is a tradeoff:
-        - Pro: Multiple samples from same file don't require re-reading
-        - Con: First access to each file is slow
+        """Load a single record via memory-mapped numpy files (O(1) random access).
 
         Parameters
         ----------
         tfrecord_path : str
-            Path to the TFRecord file.
+            Path to the (original) TFRecord file — used to derive the numpy paths.
         record_idx : int
             Index of the record within the file.
 
@@ -192,88 +196,14 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         tuple
             (csi, position, timestamp) where:
             - csi: np.ndarray of shape (total_antennas, 1, 1024), complex64
-             - position: np.ndarray of shape (2,), float64
+            - position: np.ndarray of shape (2,), float64
             - timestamp: float32
         """
-        # Load record directly without caching entire file
-        # This is truly lazy - only loads the requested sample
-        # Note: This is slower than caching but doesn't require 20GB+ RAM
-        description = {
-            'csi': 'byte',
-            'pos-tachy': 'byte',
-            'time': 'float',
-        }
-        loader = tfrecord.tfrecord_loader(tfrecord_path, None, description)
-
-        # Iterate to the desired record
-        record = None
-        for i, r in enumerate(loader):
-            if i == record_idx:
-                record = r
-                break
-
-        if record is None:
-            raise ValueError(f'Record {record_idx} not found in {tfrecord_path}')
-
-        # Parse CSI: bytes -> float32 array -> reshape -> complex conversion
-        # DICHASUS stores CSI as a protobuf-wrapped byte string
-        # First byte is protobuf field tag, skip it to get raw float32 data
-        # Truncate to exact expected size (n_antennas * 1024 subcarriers * 2 for real/imag)
-        expected_bytes = self.total_antennas * 1024 * 2 * 4
-        csi_bytes = record['csi'][
-            1 : 1 + expected_bytes
-        ]  # Skip protobuf wrapper, truncate to exact size
-        csi = np.frombuffer(csi_bytes, dtype=np.float32).reshape(self.total_antennas, 1024, 2)
-        # Convert to complex64: real + 1j * imag
-        csi = csi[:, :, 0] + 1j * csi[:, :, 1]
-        # FFT shift moves DC to center of subcarrier array (required by DICHASUS format)
-        csi = np.fft.fftshift(csi, axes=1)
-
-        # Parse position: DICHASUS uses protobuf with field 4 containing (x, y, z) as float64
-        pos_bytes = record['pos-tachy']
-        # Find field 4 (tag = 0x22) in the protobuf
-        pos_field_start = pos_bytes.find(b'\x22\x18')  # Field 4, length-delimited
-        if pos_field_start >= 0:
-            # Field 4: skip 2 bytes (tag + length), next 24 bytes are 3 float64
-            pos_data = pos_bytes[pos_field_start + 2 : pos_field_start + 26]
-            pos = np.frombuffer(pos_data, dtype=np.float64)[:2]  # X, Y only
-        else:
-            pos = np.zeros(2, dtype=np.float64)
-
-        # Get timestamp: tfrecord returns array with shape (1,), get scalar
-        time = float(record['time'].item())
-
-        # Apply STO/CPO calibration if available
-        # STO (Sampling Time Offset): phase shift proportional to subcarrier index
-        # CPO (Carrier Phase Offset): constant phase shift per antenna
-        # Combined: csi * exp(j * (sto_offset + cpo_offset))
-        if self.offsets is not None:
-            subcarriers = 1024
-            # Create subcarrier index array [0, 1, ..., 1023]
-            sc_idx = np.arange(subcarriers, dtype=np.float32)
-
-            # STO: linear phase ramp across subcarriers
-            # Each antenna has different sto coefficient
-            sto_offset = np.tensordot(
-                np.array(self.offsets['sto'], dtype=np.float32),
-                2.0 * np.pi * sc_idx / subcarriers,
-                axes=0,
-            )
-
-            # CPO: constant phase per antenna (same across all subcarriers)
-            cpo_offset = np.tensordot(
-                np.array(self.offsets['cpo'], dtype=np.float32),
-                np.ones(subcarriers, dtype=np.float32),
-                axes=0,
-            )
-
-            # Apply phase correction: multiply by exp(j * phase)
-            phase = np.exp(1j * (sto_offset + cpo_offset))
-            csi = csi * phase
-
-        # Add the T=1 dimension to match (R, T, F) convention expected by csi_to_realvec
-        csi = csi[:, np.newaxis, :]
-
+        csi_mm, pos_mm, time_mm = self._get_mmap(tfrecord_path)
+        # .copy() materialises the slice so downstream ops don't modify the mmap
+        csi = csi_mm[record_idx].copy()   # (total_antennas, 1, 1024), complex64
+        pos = pos_mm[record_idx].copy()   # (2,), float64
+        time = float(time_mm[record_idx])
         return csi, pos, time
 
     def _H_from_global_index(self, gidx: int) -> torch.Tensor:
@@ -293,9 +223,12 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         tfrecord_path, record_idx = self.file_record_map[gidx]
         csi, _, _ = self._load_record(tfrecord_path, record_idx)
 
-        # Slice to get only this BS's antennas
-        # BS 0: antennas 0-7, BS 1: antennas 8-15, etc.
-        csi_bs = csi[self.bs_id * self.antennas_per_bs : (self.bs_id + 1) * self.antennas_per_bs]
+        # Slice each physical BS's antennas and concatenate along antenna dim.
+        # For a single-BS group this is identical to the old scalar bs_id path.
+        # BS k occupies antennas [k*apb : (k+1)*apb] in the raw array.
+        apb = self.antennas_per_bs
+        slices = [csi[k * apb : (k + 1) * apb] for k in self.bs_ids]
+        csi_bs = np.concatenate(slices, axis=0)
         return torch.from_numpy(csi_bs)
 
     def _pos_from_global_index(self, gidx: int) -> torch.Tensor:
@@ -429,8 +362,8 @@ class LazyDICHASUSSharedDataset(Dataset):
         file_record_map: dict[int, tuple[str, int]],
         antennas_per_bs: int,
         n_bs: int,
-        idx_bs_1: int,
-        idx_bs_2: int,
+        bs_ids_1: list[int],
+        bs_ids_2: list[int],
         preprocess: str = 'dichasus',
         offsets_path: str | None = None,
     ):
@@ -439,8 +372,8 @@ class LazyDICHASUSSharedDataset(Dataset):
         self.file_record_map = file_record_map
         self.antennas_per_bs = antennas_per_bs
         self.n_bs = n_bs
-        self.idx_bs_1 = idx_bs_1
-        self.idx_bs_2 = idx_bs_2
+        self.bs_ids_1 = bs_ids_1
+        self.bs_ids_2 = bs_ids_2
         self.total_antennas = antennas_per_bs * n_bs
         self.preprocess = preprocess
 
@@ -450,73 +383,39 @@ class LazyDICHASUSSharedDataset(Dataset):
             with open(offsets_path) as f:
                 self.offsets = json.load(f)
 
-        # File-level cache for lazy loading (same caching strategy)
-        self._tfrecord_cache: dict[str, list] = {}
+        # Cache for memory-mapped numpy arrays
+        self._mmap_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+    def _get_mmap(
+        self, tfrecord_path: str
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return memory-mapped arrays for a given TFRecord path, with caching."""
+        if tfrecord_path not in self._mmap_cache:
+            data_dir = Path(tfrecord_path).parent
+            stem = Path(tfrecord_path).stem
+            csi_mm = np.load(str(data_dir / f'{stem}_csi.npy'), mmap_mode='r')
+            pos_mm = np.load(str(data_dir / f'{stem}_pos.npy'), mmap_mode='r')
+            time_mm = np.load(str(data_dir / f'{stem}_time.npy'), mmap_mode='r')
+            self._mmap_cache[tfrecord_path] = (csi_mm, pos_mm, time_mm)
+        return self._mmap_cache[tfrecord_path]
 
     def _load_record(self, tfrecord_path: str, record_idx: int) -> np.ndarray:
-        """Load a single record from TFRecord file, with caching.
-
-        Similar to LazyDICHASUSTrajectoryDataset._load_record but only
-        returns CSI (not position or timestamp).
+        """Load CSI for a single record via memory-mapped numpy files (O(1) random access).
 
         Parameters
         ----------
         tfrecord_path : str
-            Path to the TFRecord file.
+            Path to the (original) TFRecord file — used to derive the numpy paths.
         record_idx : int
             Index of the record within the file.
 
         Returns
         -------
         np.ndarray
-            CSI tensor, shape (total_antennas, 1024), complex64
+            CSI tensor, shape (total_antennas, 1, 1024), complex64
         """
-        # Load record directly without caching entire file
-        description = {
-            'csi': 'byte',
-            'pos-tachy': 'byte',
-            'time': 'float',
-        }
-        loader = tfrecord.tfrecord_loader(tfrecord_path, None, description)
-
-        # Iterate to the desired record
-        record = None
-        for i, r in enumerate(loader):
-            if i == record_idx:
-                record = r
-                break
-
-        if record is None:
-            raise ValueError(f'Record {record_idx} not found in {tfrecord_path}')
-
-        # Parse CSI (same as in LazyDICHASUSTrajectoryDataset)
-        expected_bytes = self.total_antennas * 1024 * 2 * 4
-        csi_bytes = record['csi'][1 : 1 + expected_bytes]
-        csi = np.frombuffer(csi_bytes, dtype=np.float32).reshape(self.total_antennas, 1024, 2)
-        csi = csi[:, :, 0] + 1j * csi[:, :, 1]
-        csi = np.fft.fftshift(csi, axes=1)
-
-        # Apply calibration if available
-        if self.offsets is not None:
-            subcarriers = 1024
-            sc_idx = np.arange(subcarriers, dtype=np.float32)
-            sto_offset = np.tensordot(
-                np.array(self.offsets['sto'], dtype=np.float32),
-                2.0 * np.pi * sc_idx / subcarriers,
-                axes=0,
-            )
-            cpo_offset = np.tensordot(
-                np.array(self.offsets['cpo'], dtype=np.float32),
-                np.ones(subcarriers, dtype=np.float32),
-                axes=0,
-            )
-            phase = np.exp(1j * (sto_offset + cpo_offset))
-            csi = csi * phase
-
-        # Add T=1 dimension to match (R, T, F) convention
-        csi = csi[:, np.newaxis, :]
-
-        return csi
+        csi_mm, _, _ = self._get_mmap(tfrecord_path)
+        return csi_mm[record_idx].copy()  # (total_antennas, 1, 1024), complex64
 
     def __len__(self) -> int:
         """Return number of shared samples."""
@@ -543,19 +442,20 @@ class LazyDICHASUSSharedDataset(Dataset):
         tfrecord_path, record_idx = self.file_record_map[gidx]
         csi = self._load_record(tfrecord_path, record_idx)
 
-        # Slice for both base stations
-        csi_bs_1 = csi[
-            self.idx_bs_1 * self.antennas_per_bs : (self.idx_bs_1 + 1) * self.antennas_per_bs
-        ]
-        csi_bs_2 = csi[
-            self.idx_bs_2 * self.antennas_per_bs : (self.idx_bs_2 + 1) * self.antennas_per_bs
-        ]
+        # Concatenate antenna slices for each physical BS group
+        apb = self.antennas_per_bs
+        csi_bs_1 = np.concatenate(
+            [csi[k * apb : (k + 1) * apb] for k in self.bs_ids_1], axis=0
+        )
+        csi_bs_2 = np.concatenate(
+            [csi[k * apb : (k + 1) * apb] for k in self.bs_ids_2], axis=0
+        )
 
         # Preprocess and convert to real-valued vector
         H_1 = csi_to_realvec(torch.from_numpy(csi_bs_1), method=self.preprocess)
         H_2 = csi_to_realvec(torch.from_numpy(csi_bs_2), method=self.preprocess)
 
-        return H_1, H_2, (self.idx_bs_1, self.idx_bs_2)
+        return H_1, H_2, (self.bs_ids_1[0], self.bs_ids_2[0])
 
 
 class DICHASUSDataModule(l.LightningDataModule):
@@ -634,7 +534,9 @@ class DICHASUSDataModule(l.LightningDataModule):
         'batch_size': 64,
         'num_workers': 0,
         'pin_memory': True,
-        'base_stations': [0, 1, 2],  # Which BSs to use
+        # Each inner list is one virtual BS; single-element lists = no aggregation.
+        # e.g. [[0],[1],[2]] → 3 independent BSs; [[0,1],[2,3]] → 2 aggregated BSs.
+        'bs_aggregation': [[0], [1], [2]],
         'antennas_per_bs': 8,
         'Tc_pos': 1.5,  # Positive time-coherence window (seconds)
         'Tc_neg': 5.0,  # Negative time-coherence window (seconds)
@@ -643,7 +545,7 @@ class DICHASUSDataModule(l.LightningDataModule):
         'n_pos': None,  # Max positives per anchor (None = all)
         'n_neg': None,  # Max negatives per anchor (None = all)
         'preprocess': 'dichasus',
-        'edge_set': [],  # BS pairs for shared datasets
+        'edge_set': [],  # Virtual BS index pairs for shared datasets
         'train_split': 0.7,
         'val_split': 0.15,
         'test_split': 0.15,
@@ -674,12 +576,14 @@ class DICHASUSDataModule(l.LightningDataModule):
         # Each stem corresponds to one TFRecord file
         self.file_stems: list[str] = self.cfg['files']
 
-        # Base station configuration
-        self.base_stations: list[int] = list(self.cfg.get('base_stations', [0, 1, 2]))
+        # Each group is one virtual BS; a single-element group means no aggregation.
+        self.virtual_bs_groups: list[list[int]] = [
+            list(g) for g in self.cfg['bs_aggregation']
+        ]
+        # Flat list of all referenced physical BS IDs (derived, not configured separately)
+        self.base_stations: list[int] = [bs for g in self.virtual_bs_groups for bs in g]
         self.n_bs: int = len(self.base_stations)
         self.antennas_per_bs: int = int(self.cfg['antennas_per_bs'])
-        # Total antennas is still n_bs * antennas_per_bs (for slicing CSI)
-        # Note: The raw data has 32 antennas (4 BSs × 8), we slice to get only selected BSs
         self.total_antennas: int = 32  # Raw DICHASUS cf0x has 32 antennas total
 
         # Time-coherence parameters for positive/negative pair selection
@@ -687,18 +591,19 @@ class DICHASUSDataModule(l.LightningDataModule):
         self.Tc_neg = float(self.cfg['Tc_neg'])
         self.preprocess: str = self.cfg.get('preprocess', 'dichasus')
 
-        # Number of agents equals number of base stations
-        self.n_agents: int = self.n_bs
+        # n_agents is the number of virtual (possibly aggregated) BSs
+        self.n_agents: int = len(self.virtual_bs_groups)
         self.feature_dim: int | None = None
 
-        # BS pairs for shared (inter-BS alignment) loss
-        # Filter edge_set to only include pairs where both BSs are in base_stations
+        # BS pairs for shared (inter-BS alignment) loss.
+        # edge_set references virtual BS indices (0-indexed into virtual_bs_groups).
         raw_edge_set: list = self.cfg.get('edge_set', [])
+        n_virt = len(self.virtual_bs_groups)
         self.edge_set: list[tuple[int, int]] = []
         for e in raw_edge_set:
-            bs1, bs2 = tuple(e)
-            if bs1 in self.base_stations and bs2 in self.base_stations:
-                self.edge_set.append((bs1, bs2))
+            v1, v2 = int(e[0]), int(e[1])
+            if v1 < n_virt and v2 < n_virt:
+                self.edge_set.append((v1, v2))
 
         # Random number generator for pair selection
         self.rng = np.random.default_rng(seed)
@@ -737,6 +642,9 @@ class DICHASUSDataModule(l.LightningDataModule):
                     offsets_dest,
                 )
 
+            # Convert TFRecord to numpy memmaps for fast random access
+            self._convert_tfrecord_to_numpy(stem)
+
     @staticmethod
     def _download(url: str, dest: Path) -> None:
         """Download a file with progress bar.
@@ -758,6 +666,98 @@ class DICHASUSDataModule(l.LightningDataModule):
             for chunk in r.iter_content(chunk_size=1 << 20):  # 1MB chunks
                 f.write(chunk)
                 bar.update(len(chunk))
+
+    def _convert_tfrecord_to_numpy(self, stem: str) -> None:
+        """Convert a TFRecord file to numpy memmap files for O(1) random access.
+
+        Produces three files in ``data_dir``:
+        - ``{stem}_csi.npy``  — shape (N, 32, 1, 1024), dtype complex64
+          STO/CPO calibration and fftshift applied at conversion time.
+        - ``{stem}_pos.npy``  — shape (N, 2), dtype float64
+        - ``{stem}_time.npy`` — shape (N,), dtype float32
+
+        Conversion is skipped when all three files already exist.
+
+        Parameters
+        ----------
+        stem : str
+            File stem (e.g. 'dichasus-cf02').
+        """
+        csi_path = self.data_dir / f'{stem}_csi.npy'
+        pos_path = self.data_dir / f'{stem}_pos.npy'
+        time_path = self.data_dir / f'{stem}_time.npy'
+
+        if csi_path.exists() and pos_path.exists() and time_path.exists():
+            return
+
+        tfrecords_path = str(self.data_dir / f'{stem}.tfrecords')
+        description = {'csi': 'byte', 'pos-tachy': 'byte', 'time': 'float'}
+
+        # Load STO/CPO calibration once (apply per-record during conversion)
+        offsets_path = self.data_dir / f'reftx-offsets-{stem}.json'
+        phase: np.ndarray | None = None
+        if offsets_path.exists():
+            with open(offsets_path) as f:
+                offsets = json.load(f)
+            subcarriers = 1024
+            sc_idx = np.arange(subcarriers, dtype=np.float32)
+            sto = np.tensordot(
+                np.array(offsets['sto'], dtype=np.float32),
+                2.0 * np.pi * sc_idx / subcarriers,
+                axes=0,
+            )
+            cpo = np.tensordot(
+                np.array(offsets['cpo'], dtype=np.float32),
+                np.ones(subcarriers, dtype=np.float32),
+                axes=0,
+            )
+            phase = np.exp(1j * (sto + cpo)).astype(np.complex64)  # (32, 1024)
+
+        # Pass 1: count records so we can pre-allocate memmaps
+        loader = tfrecord.tfrecord_loader(tfrecords_path, None, description)
+        N = sum(1 for _ in loader)
+
+        total_antennas = 32  # DICHASUS cf0x layout
+        csi_mm = np.lib.format.open_memmap(
+            str(csi_path), mode='w+', dtype=np.complex64, shape=(N, total_antennas, 1, 1024)
+        )
+        pos_mm = np.lib.format.open_memmap(
+            str(pos_path), mode='w+', dtype=np.float64, shape=(N, 2)
+        )
+        time_mm = np.lib.format.open_memmap(
+            str(time_path), mode='w+', dtype=np.float32, shape=(N,)
+        )
+
+        # Pass 2: fill memmaps — streams one record at a time (constant RAM)
+        loader = tfrecord.tfrecord_loader(tfrecords_path, None, description)
+        for i, record in enumerate(tqdm(loader, total=N, desc=f'Converting {stem} to numpy')):
+            # --- CSI ---
+            expected_bytes = total_antennas * 1024 * 2 * 4
+            csi_bytes = record['csi'][1 : 1 + expected_bytes]
+            csi = np.frombuffer(csi_bytes, dtype=np.float32).reshape(
+                total_antennas, 1024, 2
+            ).copy()
+            csi = (csi[:, :, 0] + 1j * csi[:, :, 1]).astype(np.complex64)
+            csi = np.fft.fftshift(csi, axes=1)
+            if phase is not None:
+                csi = (csi * phase).astype(np.complex64)
+            csi_mm[i] = csi[:, np.newaxis, :]  # (32, 1, 1024)
+
+            # --- Position ---
+            pos_bytes = record['pos-tachy']
+            pos_field_start = pos_bytes.find(b'\x22\x18')
+            if pos_field_start >= 0:
+                pos_data = pos_bytes[pos_field_start + 2 : pos_field_start + 26]
+                pos = np.frombuffer(pos_data, dtype=np.float64)[:2].copy()
+            else:
+                pos = np.zeros(2, dtype=np.float64)
+            pos_mm[i] = pos
+
+            # --- Timestamp ---
+            time_mm[i] = float(record['time'].item())
+
+        # Flush buffers to disk
+        del csi_mm, pos_mm, time_mm
 
     def _parse_tfrecord_timestamps(
         self,
@@ -906,24 +906,15 @@ class DICHASUSDataModule(l.LightningDataModule):
             tfrecords_path = str(self.data_dir / f'{stem}.tfrecords')
             file_offsets[stem] = global_idx
 
-            description = {
-                'csi': 'byte',
-                'pos-tachy': 'byte',
-                'time': 'float',
-            }
-            loader = tfrecord.tfrecord_loader(tfrecords_path, None, description)
+            # Load timestamps from pre-converted numpy file (fast, no tfrecord scan)
+            file_timestamps = np.load(str(self.data_dir / f'{stem}_time.npy')).ravel()
+            N = len(file_timestamps)
 
-            # Single pass: build index mapping AND collect timestamps
-            # (avoids re-reading the file twice)
-            file_timestamps = []
-            for record_idx, record in enumerate(loader):
+            for record_idx in range(N):
                 file_record_map[global_idx] = (tfrecords_path, record_idx)
-                # Time is returned as array (1,), extract scalar
-                file_timestamps.append(float(record['time'].item()))
                 global_idx += 1
 
-            # Convert timestamps to array (flatten to ensure 1D)
-            all_timestamps.append(np.array(file_timestamps, dtype=np.float32).ravel())
+            all_timestamps.append(file_timestamps)
 
         # Concatenate all timestamps and ensure 1D
         timestamps_all = np.concatenate(all_timestamps).ravel()
@@ -983,15 +974,14 @@ class DICHASUSDataModule(l.LightningDataModule):
         apb = self.antennas_per_bs
         local_datasets: dict[int, LazyDICHASUSTrajectoryDataset] = {}
 
-        # Create one dataset per selected base station
-        for bs_id in self.base_stations:
-            # Use first file's calibration (assumes similar offsets across files)
-            offsets_path = str(self.data_dir / f'reftx-offsets-{stems[0]}.json')
-            if len(stems) > 1:
-                # Multiple files - calibration would need merging
-                offsets_path = None
+        # Calibration path — only meaningful for single-file datasets
+        offsets_path: str | None = str(self.data_dir / f'reftx-offsets-{stems[0]}.json')
+        if len(stems) > 1:
+            offsets_path = None
 
-            local_datasets[bs_id] = LazyDICHASUSTrajectoryDataset(
+        # Create one dataset per virtual BS (keyed by virtual BS index)
+        for virt_id, phys_ids in enumerate(self.virtual_bs_groups):
+            local_datasets[virt_id] = LazyDICHASUSTrajectoryDataset(
                 idx_to_neg_pos=idx_to_neg_pos,
                 valid_idxs=split_indices.get('train', valid_idxs),
                 file_record_map=file_record_map,
@@ -999,14 +989,14 @@ class DICHASUSDataModule(l.LightningDataModule):
                 file_offsets=file_offsets,
                 antennas_per_bs=apb,
                 n_bs=self.n_bs,
-                bs_id=bs_id,
+                bs_ids=phys_ids,
                 pair_mode=self.cfg['pair_mode'],
                 p_positive=float(self.cfg['p_positive']),
                 preprocess=self.preprocess,
                 offsets_path=offsets_path,
             )
 
-        # Create shared datasets for BS pairs (if configured)
+        # Create shared datasets for virtual BS pairs (if configured)
         shared_datasets: dict[tuple[int, int], LazyDICHASUSSharedDataset] = {}
         all_anchor_idxs = np.unique([anchor for (_, anchor) in idx_to_neg_pos])
 
@@ -1015,22 +1005,17 @@ class DICHASUSDataModule(l.LightningDataModule):
             np.isin(all_anchor_idxs, split_indices.get('train', all_anchor_idxs))
         ]
 
-        for bs_1, bs_2 in self.edge_set:
+        for v1, v2 in self.edge_set:
             if len(train_anchor_idxs) == 0:
                 continue
 
-            # Same calibration handling as local datasets
-            offsets_path = str(self.data_dir / f'reftx-offsets-{stems[0]}.json')
-            if len(stems) > 1:
-                offsets_path = None
-
-            shared_datasets[(bs_1, bs_2)] = LazyDICHASUSSharedDataset(
+            shared_datasets[(v1, v2)] = LazyDICHASUSSharedDataset(
                 shared_global_idxs=train_anchor_idxs,
                 file_record_map=file_record_map,
                 antennas_per_bs=apb,
                 n_bs=self.n_bs,
-                idx_bs_1=bs_1,
-                idx_bs_2=bs_2,
+                bs_ids_1=self.virtual_bs_groups[v1],
+                bs_ids_2=self.virtual_bs_groups[v2],
                 preprocess=self.preprocess,
                 offsets_path=offsets_path,
             )

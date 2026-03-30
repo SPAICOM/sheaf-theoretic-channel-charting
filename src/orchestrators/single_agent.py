@@ -220,9 +220,10 @@ class SingleAgentModule(l.LightningModule):
         K_max: int,
         K_min: int = 2,
         step: int = 1,
+        split: str = 'train'
     ) -> dict[str, Any]:
         """Compute and log continuity, trustworthiness, and Kruskal stress."""
-        embs, pos, embs_KDTree, pos_KDTree = self.build_trajectory(split='test')
+        embs, pos, embs_KDTree, pos_KDTree = self.build_trajectory(split=split)
 
         res: dict[str, Any] = {
             'KS': self.compute_kruskal_stress(embs=embs, pos=pos),
