@@ -70,13 +70,16 @@ def csi_to_realvec_ferrand(
 def csi_to_realvec_dichasus(
     H: torch.Tensor,
     chunk_size: int = 32,
+    normalize: bool = True,
+    eps: float = 1e-12,
 ) -> torch.Tensor:
     """Preprocess CSI following the DICHASUS channel charting tutorial.
 
     Feature engineering based on subcarrier chunk averaging:
       1. Divide F subcarriers into non-overlapping chunks of size chunk_size
       2. Average H within each chunk -> reduces frequency dimension F -> F//chunk_size
-      3. Stack real and imaginary parts -> real-valued output
+      3. Element-wise normalization (divide by average power)
+      4. Stack real and imaginary parts -> real-valued output
 
     Parameters
     ----------
@@ -88,6 +91,12 @@ def csi_to_realvec_dichasus(
     chunk_size : int
         Number of subcarriers per averaging chunk (default: 32).
         Output frequency dimension = F // chunk_size.
+    normalize : bool
+        Whether to apply element-wise normalization (default: True).
+        Normalizes by dividing each element by the average power across all
+        antennas, tx, and frequency bins.
+    eps : float
+        Numerical stability constant for normalization (default: 1e-12).
 
     Returns
     -------
@@ -106,6 +115,10 @@ def csi_to_realvec_dichasus(
     H_chunked = H.reshape(R, T, num_chunks, chunk_size)
     H_avg = H_chunked.mean(dim=-1)
 
+    if normalize:
+        power = torch.mean(torch.abs(H_avg) ** 2)
+        H_avg = H_avg / (torch.sqrt(power) + eps)
+
     features = torch.stack([H_avg.real, H_avg.imag], dim=-1)
     features = features.reshape(-1).float().to(device)
     return features
@@ -117,6 +130,7 @@ def csi_to_realvec(
     lag_step: int = 4,
     max_lag: int = 60,
     chunk_size: int = 32,
+    normalize: bool = True,
     eps: float = 1e-12,
 ) -> torch.Tensor:
     """Wrapper for CSI to real vector conversion.
@@ -133,8 +147,10 @@ def csi_to_realvec(
         Only for 'ferrand' method. Maximum lag.
     chunk_size : int
         Only for 'dichasus' method. Number of subcarriers per averaging chunk.
+    normalize : bool
+        Only for 'dichasus' method. Whether to apply element-wise normalization.
     eps : float
-        Only for 'ferrand' method. Numerical stability constant.
+        Numerical stability constant.
 
     Returns
     -------
@@ -144,7 +160,7 @@ def csi_to_realvec(
     if method == 'ferrand':
         return csi_to_realvec_ferrand(H, lag_step, max_lag, eps)
     elif method == 'dichasus':
-        return csi_to_realvec_dichasus(H, chunk_size)
+        return csi_to_realvec_dichasus(H, chunk_size, normalize, eps)
     else:
         raise ValueError(f"Unknown method: {method}. Use 'ferrand' or 'dichasus'.")
 

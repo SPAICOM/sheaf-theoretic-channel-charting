@@ -128,6 +128,28 @@ class SingleAgentModule(l.LightningModule):
         )
         return {'optimizer': optimizer}
 
+    def set_lr(self, lr: float) -> None:
+        """Set a new learning rate for the optimizer.
+
+        This method allows changing the learning rate dynamically, useful for
+        fine-tuning across folds with different learning rates.
+
+        Parameters
+        ----------
+        lr : float
+            New learning rate to use.
+        """
+        self.hparams.lr = lr
+        try:
+            if self.trainer is not None:
+                optimizers = self.trainer.optimizers
+                if optimizers is not None:
+                    for opt in optimizers:
+                        for param_group in opt.param_groups:
+                            param_group['lr'] = lr
+        except RuntimeError:
+            pass
+
     # ------------------------------------------------------------------
     # Alpha schedule (identical to BaseOrchestrator)
     # ------------------------------------------------------------------
@@ -216,11 +238,7 @@ class SingleAgentModule(l.LightningModule):
         return torch.sqrt(torch.sum((D - beta * D_hat) ** 2) / torch.sum(D**2))
 
     def eval_all(
-        self,
-        K_max: int,
-        K_min: int = 2,
-        step: int = 1,
-        split: str = 'train'
+        self, K_max: int, K_min: int = 2, step: int = 1, split: str = 'train'
     ) -> dict[str, Any]:
         """Compute and log continuity, trustworthiness, and Kruskal stress."""
         embs, pos, embs_KDTree, pos_KDTree = self.build_trajectory(split=split)

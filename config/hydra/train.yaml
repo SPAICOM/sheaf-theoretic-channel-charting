@@ -12,6 +12,14 @@ logger:
 
 seed: 80
 
+# Multi-fold training configuration
+# Set num_folds > 1 to enable cross-validation style training
+num_folds: 1  # Number of folds (1 = single training run)
+anchor_seed: 80  # Seed for generating anchors (same across all folds)
+triplet_seeds: [100]  # Seeds for triplet sampling (one per fold)
+learning_rates: [0.001]  # Learning rates (one per fold, descending order recommended)
+separate_fold_runs: false  # If true, creates separate wandb run per fold
+
 trainer:
   max_epochs: 20
   accelerator: auto

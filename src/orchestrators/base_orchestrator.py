@@ -316,6 +316,25 @@ class BaseOrchestrator(l.LightningModule, ABC):
         )
         return {'optimizer': optimizer}
 
+    def set_lr(self, lr: float) -> None:
+        """Set a new learning rate for the optimizer.
+
+        This method allows changing the learning rate dynamically, useful for
+        fine-tuning across folds with different learning rates.
+
+        Parameters
+        ----------
+        lr : float
+            New learning rate to use.
+        """
+        self.hparams.lr = lr
+        if hasattr(self, 'trainer') and self.trainer is not None:
+            optimizers = self.trainer.optimizers
+            if optimizers is not None:
+                for opt in optimizers:
+                    for param_group in opt.param_groups:
+                        param_group['lr'] = lr
+
     def _compute_alpha(self, epoch: int) -> float:
         """Compute alpha using sigmoid function.
 

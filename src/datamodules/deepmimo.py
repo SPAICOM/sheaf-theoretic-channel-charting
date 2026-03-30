@@ -317,7 +317,8 @@ class DeepMimoDataModule(l.LightningDataModule):
     def __init__(
         self,
         dataset_cfg: DictConfig | dict[str, Any],
-        seed: int | None = None,
+        anchor_seed: int | None = None,
+        triplet_seed: int | None = None,
     ):
         """
         Initialize the DeepMimoDataModule.
@@ -327,11 +328,30 @@ class DeepMimoDataModule(l.LightningDataModule):
         dataset_cfg : DictConfig | dict[str, Any]
             User configuration overriding DEFAULTS.
             Can be provided via Hydra/OmegaConf or as a normal dictionary.
+        anchor_seed : int | None
+            Seed for generating trajectories and anchors (ensures same anchors across folds).
+            If None, uses 'seed' from dataset_cfg or defaults to train_seed.
+        triplet_seed : int | None
+            Seed for sampling positives and negatives (ensures different triplets per fold).
+            If None, uses 'seed' from dataset_cfg or defaults to train_seed.
         """
         super().__init__()
 
         # Merge user configuration with defaults
         self.cfg = _merge_defaults(self.DEFAULTS, dataset_cfg)
+
+        # Handle seeds: support both new naming (anchor_seed, triplet_seed) and legacy (seed)
+        if anchor_seed is None:
+            anchor_seed = self.cfg.get('seed', self.cfg.get('train_seed', 27))
+        if triplet_seed is None:
+            triplet_seed = self.cfg.get('seed', self.cfg.get('train_seed', 27))
+
+        self.anchor_seed = anchor_seed
+        self.triplet_seed = triplet_seed
+
+        # Separate RNGs for anchor generation vs triplet sampling
+        self.anchor_rng = np.random.default_rng(self.anchor_seed)
+        self.triplet_rng = np.random.default_rng(self.triplet_seed)
 
         # Casting
         self.in_window = int(self.cfg['in_window'])
@@ -347,7 +367,7 @@ class DeepMimoDataModule(l.LightningDataModule):
         self.trajectory_kind = self.cfg['trajectory_kind']
         self.pos_distance = self.cfg['pos_distance']
         self.neg_distance = self.cfg['neg_distance']
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng(anchor_seed)
         self.kinds = (
             'linear',
             'circular',
@@ -1031,9 +1051,9 @@ class DeepMimoDataModule(l.LightningDataModule):
                     continue
 
                 if self.n_pos is not None:
-                    pos = pos[self.rng.choice(len(pos), size=self.n_pos, replace=False)]
+                    pos = pos[self.triplet_rng.choice(len(pos), size=self.n_pos, replace=False)]
                 if self.n_neg is not None:
-                    neg = neg[self.rng.choice(len(neg), size=self.n_neg, replace=False)]
+                    neg = neg[self.triplet_rng.choice(len(neg), size=self.n_neg, replace=False)]
 
                 idx_to_neg_pos[(user_id, anchor_rx)] = {
                     'pos': pos,
@@ -1295,8 +1315,12 @@ class DeepMimoDataModule(l.LightningDataModule):
         #                   Create the Datasets
         # ---------------------------------------------------------------
 
+        # Use anchor_seed for trajectory/anchor generation (same across folds)
+        self.rng = np.random.default_rng(self.anchor_seed)
+        # Use triplet_seed for positive/negative sampling (different per fold)
+        self.triplet_rng = np.random.default_rng(self.triplet_seed)
+
         # Training dataset
-        self.rng = np.random.default_rng(self.cfg['train_seed'])
         (
             self.train_local_dataset,
             self.train_shared_dataset,
@@ -1305,7 +1329,6 @@ class DeepMimoDataModule(l.LightningDataModule):
         ) = self._shared_gen(train_num_users)
 
         # Test dataset
-        self.rng = np.random.default_rng(self.cfg['test_seed'])
         (
             self.test_local_dataset,
             self.test_shared_dataset,
@@ -1314,7 +1337,6 @@ class DeepMimoDataModule(l.LightningDataModule):
         ) = self._shared_gen(test_num_users)
 
         # Validation dataset
-        self.rng = np.random.default_rng(self.cfg['val_seed'])
         (
             self.val_local_dataset,
             self.val_shared_dataset,

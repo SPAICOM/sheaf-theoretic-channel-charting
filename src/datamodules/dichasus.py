@@ -168,9 +168,7 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         # Key: tfrecord_path, Value: (csi_mmap, pos_mmap, time_mmap)
         self._mmap_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
-    def _get_mmap(
-        self, tfrecord_path: str
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_mmap(self, tfrecord_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return memory-mapped arrays for a given TFRecord path, with caching."""
         if tfrecord_path not in self._mmap_cache:
             data_dir = Path(tfrecord_path).parent
@@ -201,8 +199,8 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         """
         csi_mm, pos_mm, time_mm = self._get_mmap(tfrecord_path)
         # .copy() materialises the slice so downstream ops don't modify the mmap
-        csi = csi_mm[record_idx].copy()   # (total_antennas, 1, 1024), complex64
-        pos = pos_mm[record_idx].copy()   # (2,), float64
+        csi = csi_mm[record_idx].copy()  # (total_antennas, 1, 1024), complex64
+        pos = pos_mm[record_idx].copy()  # (2,), float64
         time = float(time_mm[record_idx])
         return csi, pos, time
 
@@ -386,9 +384,7 @@ class LazyDICHASUSSharedDataset(Dataset):
         # Cache for memory-mapped numpy arrays
         self._mmap_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
-    def _get_mmap(
-        self, tfrecord_path: str
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_mmap(self, tfrecord_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return memory-mapped arrays for a given TFRecord path, with caching."""
         if tfrecord_path not in self._mmap_cache:
             data_dir = Path(tfrecord_path).parent
@@ -444,12 +440,8 @@ class LazyDICHASUSSharedDataset(Dataset):
 
         # Concatenate antenna slices for each physical BS group
         apb = self.antennas_per_bs
-        csi_bs_1 = np.concatenate(
-            [csi[k * apb : (k + 1) * apb] for k in self.bs_ids_1], axis=0
-        )
-        csi_bs_2 = np.concatenate(
-            [csi[k * apb : (k + 1) * apb] for k in self.bs_ids_2], axis=0
-        )
+        csi_bs_1 = np.concatenate([csi[k * apb : (k + 1) * apb] for k in self.bs_ids_1], axis=0)
+        csi_bs_2 = np.concatenate([csi[k * apb : (k + 1) * apb] for k in self.bs_ids_2], axis=0)
 
         # Preprocess and convert to real-valued vector
         H_1 = csi_to_realvec(torch.from_numpy(csi_bs_1), method=self.preprocess)
@@ -557,7 +549,8 @@ class DICHASUSDataModule(l.LightningDataModule):
     def __init__(
         self,
         dataset_cfg: DictConfig | dict[str, Any] | None = None,
-        seed: int | None = None,
+        anchor_seed: int | None = None,
+        triplet_seed: int | None = None,
     ) -> None:
         """Initialize the DICHASUS DataModule.
 
@@ -565,11 +558,28 @@ class DICHASUSDataModule(l.LightningDataModule):
         ----------
         dataset_cfg : DictConfig | dict | None
             Configuration dictionary to override defaults.
-        seed : int | None
-            Random seed for reproducibility.
+        anchor_seed : int | None
+            Seed for sample-level train/val/test splitting (ensures same anchors across folds).
+            If None, uses 'seed' from dataset_cfg or defaults to train_seed.
+        triplet_seed : int | None
+            Seed for sampling positives and negatives (ensures different triplets per fold).
+            If None, uses 'seed' from dataset_cfg or defaults to train_seed.
         """
         super().__init__()
         self.cfg = _merge_defaults(self.DEFAULTS, dataset_cfg)
+
+        # Handle seeds: support both new naming (anchor_seed, triplet_seed) and legacy (seed)
+        if anchor_seed is None:
+            anchor_seed = self.cfg.get('seed', self.cfg.get('train_seed', 27))
+        if triplet_seed is None:
+            triplet_seed = self.cfg.get('seed', self.cfg.get('train_seed', 27))
+
+        self.anchor_seed = anchor_seed
+        self.triplet_seed = triplet_seed
+
+        # Separate RNGs for anchor generation vs triplet sampling
+        self.anchor_rng = np.random.default_rng(self.anchor_seed)
+        self.triplet_rng = np.random.default_rng(self.triplet_seed)
         self.data_dir = Path(self.cfg['data_dir'])
 
         # File stems to load - controls which measurement campaigns to use
@@ -577,9 +587,7 @@ class DICHASUSDataModule(l.LightningDataModule):
         self.file_stems: list[str] = self.cfg['files']
 
         # Each group is one virtual BS; a single-element group means no aggregation.
-        self.virtual_bs_groups: list[list[int]] = [
-            list(g) for g in self.cfg['bs_aggregation']
-        ]
+        self.virtual_bs_groups: list[list[int]] = [list(g) for g in self.cfg['bs_aggregation']]
         # Flat list of all referenced physical BS IDs (derived, not configured separately)
         self.base_stations: list[int] = [bs for g in self.virtual_bs_groups for bs in g]
         self.n_bs: int = len(self.base_stations)
@@ -604,9 +612,6 @@ class DICHASUSDataModule(l.LightningDataModule):
             v1, v2 = int(e[0]), int(e[1])
             if v1 < n_virt and v2 < n_virt:
                 self.edge_set.append((v1, v2))
-
-        # Random number generator for pair selection
-        self.rng = np.random.default_rng(seed)
 
         # Validate configuration
         assert self.Tc_neg > self.Tc_pos, '"Tc_neg" must be greater than "Tc_pos"'
@@ -721,12 +726,8 @@ class DICHASUSDataModule(l.LightningDataModule):
         csi_mm = np.lib.format.open_memmap(
             str(csi_path), mode='w+', dtype=np.complex64, shape=(N, total_antennas, 1, 1024)
         )
-        pos_mm = np.lib.format.open_memmap(
-            str(pos_path), mode='w+', dtype=np.float64, shape=(N, 2)
-        )
-        time_mm = np.lib.format.open_memmap(
-            str(time_path), mode='w+', dtype=np.float32, shape=(N,)
-        )
+        pos_mm = np.lib.format.open_memmap(str(pos_path), mode='w+', dtype=np.float64, shape=(N, 2))
+        time_mm = np.lib.format.open_memmap(str(time_path), mode='w+', dtype=np.float32, shape=(N,))
 
         # Pass 2: fill memmaps — streams one record at a time (constant RAM)
         loader = tfrecord.tfrecord_loader(tfrecords_path, None, description)
@@ -734,9 +735,7 @@ class DICHASUSDataModule(l.LightningDataModule):
             # --- CSI ---
             expected_bytes = total_antennas * 1024 * 2 * 4
             csi_bytes = record['csi'][1 : 1 + expected_bytes]
-            csi = np.frombuffer(csi_bytes, dtype=np.float32).reshape(
-                total_antennas, 1024, 2
-            ).copy()
+            csi = np.frombuffer(csi_bytes, dtype=np.float32).reshape(total_antennas, 1024, 2).copy()
             csi = (csi[:, :, 0] + 1j * csi[:, :, 1]).astype(np.complex64)
             csi = np.fft.fftshift(csi, axes=1)
             if phase is not None:
@@ -1056,8 +1055,11 @@ class DICHASUSDataModule(l.LightningDataModule):
             N_total = len(timestamps_all)
             all_indices = np.arange(N_total, dtype=np.int64)
 
-            rng = np.random.default_rng(self.cfg['train_seed'])
-            rng.shuffle(all_indices)
+            # Use anchor_rng for splitting (same anchors across folds)
+            self.anchor_rng.shuffle(all_indices)
+
+            # Use triplet_rng for positive/negative sampling (different per fold)
+            triplet_rng = np.random.default_rng(self.triplet_seed)
 
             # Compute split boundaries
             n_train = int(train_split * N_total)
@@ -1075,19 +1077,19 @@ class DICHASUSDataModule(l.LightningDataModule):
                 self.train_local_dataset,
                 self.train_shared_dataset,
                 self.train_traj_dict,
-            ) = self._build_split(self.file_stems, {'train': train_indices}, rng)
+            ) = self._build_split(self.file_stems, {'train': train_indices}, triplet_rng)
 
             (
                 self.val_local_dataset,
                 self.val_shared_dataset,
                 self.val_traj_dict,
-            ) = self._build_split(self.file_stems, {'train': val_indices}, rng)
+            ) = self._build_split(self.file_stems, {'train': val_indices}, triplet_rng)
 
             (
                 self.test_local_dataset,
                 self.test_shared_dataset,
                 self.test_traj_dict,
-            ) = self._build_split(self.file_stems, {'train': test_indices}, rng)
+            ) = self._build_split(self.file_stems, {'train': test_indices}, triplet_rng)
 
         # Compute feature dimension from a sample
         # This triggers the first lazy load (and caching)

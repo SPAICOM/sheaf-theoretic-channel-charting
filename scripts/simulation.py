@@ -38,15 +38,27 @@ def main(cfg: DictConfig) -> None:
     RESULTS_PATH.mkdir(exist_ok=True, parents=True)
 
     # ===================================================
+    #             Fold Configuration
+    # ===================================================
+    num_folds = cfg.get('num_folds', 1)
+    anchor_seed = cfg.get('anchor_seed', cfg.seed)
+    triplet_seeds = cfg.get('triplet_seeds', list(range(num_folds)))
+    learning_rates = cfg.get('learning_rates', [cfg.get('lr', 1e-3)] * num_folds)
+    separate_fold_runs = cfg.get('separate_fold_runs', False)
+
+    if len(learning_rates) != num_folds:
+        raise ValueError(
+            f'learning_rates length ({len(learning_rates)}) must match num_folds ({num_folds})'
+        )
+    if len(triplet_seeds) != num_folds:
+        raise ValueError(
+            f'triplet_seeds length ({len(triplet_seeds)}) must match num_folds ({num_folds})'
+        )
+
+    # ===================================================
     #                  Wandb Logger
     # ===================================================
     logger = instantiate(cfg.logger)
-
-    # Log full Hydra config to WandB
-    if logger is not None:
-        logger.experiment.config.update(
-            OmegaConf.to_container(cfg, resolve=True), allow_val_change=True
-        )
 
     # ===================================================
     #             Define the Trainer
@@ -57,17 +69,12 @@ def main(cfg: DictConfig) -> None:
     else:
         callbacks = [instantiate(cb_conf) for cb_conf in cfg.callbacks.values()]
 
-    # Instantiate Trainer
-    trainer = Trainer(
-        **cfg.trainer,
-        callbacks=callbacks,
-        logger=logger,
+    # ===================================================
+    #             Define the DataModule (first fold)
+    # ============================================
+    datamodule = DeepMimoDataModule(
+        cfg.dataset, anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0]
     )
-
-    # ===================================================
-    #             Define the DataModule
-    # ===================================================
-    datamodule = DeepMimoDataModule(cfg.dataset, seed=cfg.seed)
     datamodule.prepare_data()
     datamodule.setup('fit')
 
@@ -98,12 +105,53 @@ def main(cfg: DictConfig) -> None:
     )
 
     # -------------------------
-    # Train
+    # Multi-fold Training
     # -------------------------
-    trainer.fit(orchestrator, datamodule=datamodule)
+    for fold_idx in range(num_folds):
+        print(f'\n{"=" * 50}')
+        print(f'Starting Fold {fold_idx + 1}/{num_folds}')
+        print(f'  triplet_seed: {triplet_seeds[fold_idx]}')
+        print(f'  learning_rate: {learning_rates[fold_idx]}')
+        print(f'{"=" * 50}\n')
+
+        # Set learning rate for this fold
+        orchestrator.set_lr(learning_rates[fold_idx])
+
+        # For fold > 0, regenerate datamodule with new triplet seed
+        if fold_idx > 0:
+            datamodule = DeepMimoDataModule(
+                cfg.dataset, anchor_seed=anchor_seed, triplet_seed=triplet_seeds[fold_idx]
+            )
+            datamodule.prepare_data()
+            datamodule.setup('fit')
+
+        # Create logger for this fold
+        if separate_fold_runs and logger is not None:
+            from lightning.pytorch.loggers import WandbLogger
+
+            fold_logger = WandbLogger(
+                project=cfg.logger.project,
+                name=f'{cfg.logger.name}_fold{fold_idx + 1}',
+                log_model=False,
+            )
+            fold_logger.experiment.config.update(
+                OmegaConf.to_container(cfg, resolve=True), allow_val_change=True
+            )
+        else:
+            fold_logger = logger
+
+        # Create a new Trainer for each fold to reset state
+        trainer = Trainer(
+            **cfg.trainer,
+            callbacks=callbacks,
+            logger=fold_logger,
+        )
+
+        # Train on this fold
+        trainer.fit(orchestrator, datamodule=datamodule)
 
     # -------------------------
-    # Test
+    # Test (on final fold)
     # -------------------------
     orchestrator.eval_all(K_max=10)
 
