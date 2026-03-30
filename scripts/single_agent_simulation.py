@@ -15,8 +15,8 @@ import hydra
 from hydra.utils import instantiate
 from lightning import Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
-
 from src.datamodules.deepmimo_single import SingleAgentDataModule
+
 from src.utils import remove_non_empty_dir
 
 

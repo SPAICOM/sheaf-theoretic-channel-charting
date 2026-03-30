@@ -1,7 +1,7 @@
 from .agents import Agent
 from .datamodules.deepmimo import DeepMimoDataModule
-from .datamodules.deepmimo_single import SingleAgentDataModule
 from .datamodules.dichasus import DICHASUSDataModule
+from .datamodules.single_agent import DICHASUSSingleAgentDataModule, SingleAgentDataModule
 from .orchestrators import (
     BundleCC,
     CoverSheafCC,
@@ -19,6 +19,7 @@ __all__ = [
     'DeepMimoDataModule',
     'DICHASUSDataModule',
     'SingleAgentDataModule',
+    'DICHASUSSingleAgentDataModule',
     'SingleAgentModule',
     'Agent',
     'FederatedCC',
