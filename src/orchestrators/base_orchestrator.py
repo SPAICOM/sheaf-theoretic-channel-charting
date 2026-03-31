@@ -35,8 +35,8 @@ import torch.nn as nn
 from scipy.spatial import KDTree
 from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
-from torch.nn.parallel import parallel_apply
 
+# from torch.nn.parallel import parallel_apply
 
 
 class BaseOrchestrator(l.LightningModule, ABC):
@@ -152,7 +152,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
             outputs[idx] = out
 
         return outputs
-    
+
     # def forward(
     #     self,
     #     combined_batch: dict[int, list[torch.Tensor]],

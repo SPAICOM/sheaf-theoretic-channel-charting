@@ -106,19 +106,13 @@ class SingleAgentModule(l.LightningModule):
     def test_step(self, batch, batch_idx: int) -> None:
         self._shared_eval(batch, batch_idx, 'test')
 
-    # def on_train_epoch_end(self) -> None:
-    #     self.plot_latent_space(
-    #         split='test',
-    #         prefix='trajectory_test',
-    #         last_epoch_only=True,
-    #         n_clusters=self.hparams.n_clusters,
-    #     )
-    #     self.plot_latent_space(
-    #         split='train',
-    #         prefix='trajectory_train',
-    #         last_epoch_only=True,
-    #         n_clusters=self.hparams.n_clusters,
-    #     )
+    def on_train_epoch_end(self) -> None:
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
 
     def configure_optimizers(self) -> dict[str, Any]:
         optimizer = torch.optim.Adam(

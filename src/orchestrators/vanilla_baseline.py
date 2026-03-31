@@ -163,12 +163,6 @@ class VanillaCC(BaseOrchestrator):
         None
         """
         self.plot_latent_space(
-            split='test',
-            prefix='trajectory_test',
-            last_epoch_only=True,
-            n_clusters=self.hparams.n_clusters,
-        )
-        self.plot_latent_space(
             split='train',
             prefix='trajectory_train',
             last_epoch_only=True,
