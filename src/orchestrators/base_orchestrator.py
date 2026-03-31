@@ -409,6 +409,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         pos: torch.Tensor,
         pos_KDTree: scipy.spatial.KDTree,
         K: int,
+        chunk_size: int = 512,
     ) -> torch.Tensor:
         """Compute continuity metric.
 
@@ -426,31 +427,42 @@ class BaseOrchestrator(l.LightningModule, ABC):
             KDTree built from original positions.
         K : int
             Number of nearest neighbors to consider.
+        chunk_size : int
+            Number of rows to process at a time to bound peak memory.
 
         Returns
         -------
         torch.Tensor
             Mean continuity score across all points.
         """
+        N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
 
-        CT = torch.zeros(N)
-        for i in range(N):
-            # Get K nearest neighbors in the original space (k=K+1 to exclude self)
-            x = pos[i, :]
-            _, Ux = pos_KDTree.query(x, k=K + 1)
-            Ux = Ux[1:]  # discard self (rank 0)
+        # Batch KDTree query using all CPU cores (workers=-1)
+        _, Ux_all = pos_KDTree.query(pos.cpu().numpy(), k=K + 1, workers=-1)
+        Ux_all = torch.tensor(Ux_all[:, 1:], dtype=torch.long)  # (N, K), excludes self
 
-            # Global ranks of all points in embedding space from i
-            D_all = torch.linalg.norm(embs - embs[i, :], dim=1)
-            D_all[i] = float('inf')  # exclude self
-            global_ranks = torch.argsort(torch.argsort(D_all)) + 1  # 1-indexed
+        embs_cpu = embs.cpu()
+        penalties = torch.zeros(N)
 
-            # Penalty: sum max(0, rank - K) for each original K-NN
-            r = global_ranks[Ux]
-            CT[i] = 1 - F * torch.sum(torch.clamp(r - K, min=0))
+        for start in range(0, N, chunk_size):
+            end = min(start + chunk_size, N)
+            B = end - start
+            # Pairwise distances in embedding space: (B, N)
+            D_chunk = torch.cdist(embs_cpu[start:end], embs_cpu)
+            # Mask self
+            D_chunk[torch.arange(B), torch.arange(start, end)] = float('inf')
+            # Distances to the K position-space neighbors
+            Ux_chunk = Ux_all[start:end]           # (B, K)
+            d_neighbors = D_chunk.gather(1, Ux_chunk)  # (B, K)
+            # Rank of neighbor k = 1 + #{points with smaller distance}
+            # Loop over K to keep peak memory at O(B*N) instead of O(B*N*K)
+            r = torch.zeros(B, K, dtype=torch.long)
+            for k in range(K):
+                r[:, k] = (D_chunk < d_neighbors[:, k:k+1]).sum(dim=1) + 1
+            penalties[start:end] = torch.clamp(r - K, min=0).float().sum(dim=1)
 
-        return torch.mean(CT)
+        return torch.mean(1 - F * penalties)
 
     def compute_trustworthiness(
         self,
@@ -458,6 +470,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         pos: torch.Tensor,
         embs_KDTree: scipy.spatial.KDTree,
         K: int,
+        chunk_size: int = 512,
     ) -> torch.Tensor:
         """Compute trustworthiness metric.
 
@@ -474,6 +487,8 @@ class BaseOrchestrator(l.LightningModule, ABC):
             KDTree built from embeddings.
         K : int
             Number of nearest neighbors to consider.
+        chunk_size : int
+            Number of rows to process at a time to bound peak memory.
 
         Returns
         -------
@@ -483,23 +498,31 @@ class BaseOrchestrator(l.LightningModule, ABC):
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
 
-        TW = torch.zeros(N)
-        for i in range(N):
-            # Get K nearest neighbors in the representation space (k=K+1 to exclude self)
-            x = embs[i, :]
-            _, Vx = embs_KDTree.query(x, k=K + 1)
-            Vx = Vx[1:]  # discard self (rank 0)
+        # Batch KDTree query using all CPU cores (workers=-1)
+        _, Vx_all = embs_KDTree.query(embs.cpu().numpy(), k=K + 1, workers=-1)
+        Vx_all = torch.tensor(Vx_all[:, 1:], dtype=torch.long)  # (N, K), excludes self
 
-            # Global ranks of all points in original space from i
-            D_all = torch.linalg.norm(pos - pos[i, :], dim=1)
-            D_all[i] = float('inf')  # exclude self
-            global_ranks = torch.argsort(torch.argsort(D_all)) + 1  # 1-indexed
+        pos_cpu = pos.cpu()
+        penalties = torch.zeros(N)
 
-            # Penalty: sum max(0, rank - K) for each embedding K-NN
-            r = global_ranks[Vx]
-            TW[i] = 1 - F * torch.sum(torch.clamp(r - K, min=0))
+        for start in range(0, N, chunk_size):
+            end = min(start + chunk_size, N)
+            B = end - start
+            # Pairwise distances in position space: (B, N)
+            D_chunk = torch.cdist(pos_cpu[start:end], pos_cpu)
+            # Mask self
+            D_chunk[torch.arange(B), torch.arange(start, end)] = float('inf')
+            # Distances to the K embedding-space neighbors
+            Vx_chunk = Vx_all[start:end]               # (B, K)
+            d_neighbors = D_chunk.gather(1, Vx_chunk)  # (B, K)
+            # Rank of neighbor k = 1 + #{points with smaller distance}
+            # Loop over K to keep peak memory at O(B*N) instead of O(B*N*K)
+            r = torch.zeros(B, K, dtype=torch.long)
+            for k in range(K):
+                r[:, k] = (D_chunk < d_neighbors[:, k:k+1]).sum(dim=1) + 1
+            penalties[start:end] = torch.clamp(r - K, min=0).float().sum(dim=1)
 
-        return torch.mean(TW)
+        return torch.mean(1 - F * penalties)
 
     def compute_kruskal_stress(
         self,

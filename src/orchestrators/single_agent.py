@@ -199,19 +199,37 @@ class SingleAgentModule(l.LightningModule):
         pos: torch.Tensor,
         pos_KDTree: scipy.spatial.KDTree,
         K: int,
+        chunk_size: int = 512,
     ) -> torch.Tensor:
         print('Computing Continuity')
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
-        CT = torch.zeros(N)
-        for i in range(N):
-            _, Ux = pos_KDTree.query(pos[i, :], k=K + 1)
-            Ux = Ux[1:]
-            D_all = torch.linalg.norm(embs - embs[i, :], dim=1)
-            D_all[i] = float('inf')
-            global_ranks = torch.argsort(torch.argsort(D_all)) + 1
-            CT[i] = 1 - F * torch.sum(torch.clamp(global_ranks[Ux] - K, min=0))
-        return torch.mean(CT)
+
+        # Batch KDTree query using all CPU cores (workers=-1)
+        _, Ux_all = pos_KDTree.query(pos.cpu().numpy(), k=K + 1, workers=-1)
+        Ux_all = torch.tensor(Ux_all[:, 1:], dtype=torch.long)  # (N, K), excludes self
+
+        embs_cpu = embs.cpu()
+        penalties = torch.zeros(N)
+
+        for start in range(0, N, chunk_size):
+            end = min(start + chunk_size, N)
+            B = end - start
+            # Pairwise distances in embedding space: (B, N)
+            D_chunk = torch.cdist(embs_cpu[start:end], embs_cpu)
+            # Mask self
+            D_chunk[torch.arange(B), torch.arange(start, end)] = float('inf')
+            # Distances to the K position-space neighbors
+            Ux_chunk = Ux_all[start:end]               # (B, K)
+            d_neighbors = D_chunk.gather(1, Ux_chunk)  # (B, K)
+            # Rank of neighbor k = 1 + #{points with smaller distance}
+            # Loop over K to keep peak memory at O(B*N) instead of O(B*N*K)
+            r = torch.zeros(B, K, dtype=torch.long)
+            for k in range(K):
+                r[:, k] = (D_chunk < d_neighbors[:, k:k+1]).sum(dim=1) + 1
+            penalties[start:end] = torch.clamp(r - K, min=0).float().sum(dim=1)
+
+        return torch.mean(1 - F * penalties)
 
     def compute_trustworthiness(
         self,
@@ -219,19 +237,37 @@ class SingleAgentModule(l.LightningModule):
         pos: torch.Tensor,
         embs_KDTree: scipy.spatial.KDTree,
         K: int,
+        chunk_size: int = 512,
     ) -> torch.Tensor:
         print('Computing Trustworthiness')
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
-        TW = torch.zeros(N)
-        for i in range(N):
-            _, Vx = embs_KDTree.query(embs[i, :], k=K + 1)
-            Vx = Vx[1:]
-            D_all = torch.linalg.norm(pos - pos[i, :], dim=1)
-            D_all[i] = float('inf')
-            global_ranks = torch.argsort(torch.argsort(D_all)) + 1
-            TW[i] = 1 - F * torch.sum(torch.clamp(global_ranks[Vx] - K, min=0))
-        return torch.mean(TW)
+
+        # Batch KDTree query using all CPU cores (workers=-1)
+        _, Vx_all = embs_KDTree.query(embs.cpu().numpy(), k=K + 1, workers=-1)
+        Vx_all = torch.tensor(Vx_all[:, 1:], dtype=torch.long)  # (N, K), excludes self
+
+        pos_cpu = pos.cpu()
+        penalties = torch.zeros(N)
+
+        for start in range(0, N, chunk_size):
+            end = min(start + chunk_size, N)
+            B = end - start
+            # Pairwise distances in position space: (B, N)
+            D_chunk = torch.cdist(pos_cpu[start:end], pos_cpu)
+            # Mask self
+            D_chunk[torch.arange(B), torch.arange(start, end)] = float('inf')
+            # Distances to the K embedding-space neighbors
+            Vx_chunk = Vx_all[start:end]               # (B, K)
+            d_neighbors = D_chunk.gather(1, Vx_chunk)  # (B, K)
+            # Rank of neighbor k = 1 + #{points with smaller distance}
+            # Loop over K to keep peak memory at O(B*N) instead of O(B*N*K)
+            r = torch.zeros(B, K, dtype=torch.long)
+            for k in range(K):
+                r[:, k] = (D_chunk < d_neighbors[:, k:k+1]).sum(dim=1) + 1
+            penalties[start:end] = torch.clamp(r - K, min=0).float().sum(dim=1)
+
+        return torch.mean(1 - F * penalties)
 
     def compute_kruskal_stress(
         self,
