@@ -432,7 +432,6 @@ class BaseOrchestrator(l.LightningModule, ABC):
         torch.Tensor
             Mean continuity score across all points.
         """
-        N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
 
         CT = torch.zeros(N)
@@ -506,8 +505,10 @@ class BaseOrchestrator(l.LightningModule, ABC):
         self,
         embs: torch.Tensor,
         pos: torch.Tensor,
+        M: int=1000,
+        S: int=1000
     ) -> torch.Tensor:
-        """Compute Kruskal stress metric.
+        """Compute Montecarlo-estimate of Kruskal stress metric.
 
         Kruskal stress measures the goodness of fit between distances
         in the original space and the embedding space using least squares.
@@ -518,31 +519,43 @@ class BaseOrchestrator(l.LightningModule, ABC):
             Embeddings of shape (N, d).
         pos : torch.Tensor
             Original positions of shape (N, 2).
-
+        M : int
+            Number of sampled points 
+        S : int
+            Number of samples trajectories
         Returns
         -------
         torch.Tensor
             Kruskal stress value.
         """
         # Distance in the original space
-        DD = (pos**2).sum(dim=1, keepdim=True)  # (N, 1)
-        D = DD + DD.T - 2 * (pos @ pos.T)
-        D = torch.clamp(D, min=0.0)
-        D = torch.sqrt(D)
+        KS = torch.zeros(S)
+        N = pos.shape[0]
 
-        # Distance in the embedding space
-        DD_hat = (embs**2).sum(dim=1, keepdim=True)  # (N, 1)
-        D_hat = DD_hat + DD_hat.T - 2 * (embs @ embs.T)
-        D_hat = torch.clamp(D_hat, min=0.0)
-        D_hat = torch.sqrt(D_hat)
+        for i in range(S):
+            idxs = torch.random.randint(low=0,high=N,size=M)
 
-        # Compute optimal scaling factor
-        beta = torch.sum(D * D_hat) / torch.sum(D**2)
+            pos_sub = pos[idxs,:]
+            embs_sub = embs[idxs,:]
 
-        # Compute Kruskal stress
-        KS = torch.sqrt(torch.sum((D - beta * D_hat) ** 2) / torch.sum(D**2))
+            DD = (pos_sub**2).sum(dim=1, keepdim=True)  # (N, 1)
+            D = DD + DD.T - 2 * (pos_sub @ pos_sub.T)
+            D = torch.clamp(D, min=0.0)
+            D = torch.sqrt(D)
 
-        return KS
+            # Distance in the embedding space
+            DD_hat = (embs_sub**2).sum(dim=1, keepdim=True)  # (N, 1)
+            D_hat = DD_hat + DD_hat.T - 2 * (embs_sub @ embs_sub.T)
+            D_hat = torch.clamp(D_hat, min=0.0)
+            D_hat = torch.sqrt(D_hat)
+
+            # Compute optimal scaling factor
+            beta = torch.sum(D * D_hat) / torch.sum(D**2)
+
+            # Compute Kruskal stress
+            KS[i] = torch.sqrt(torch.sum((D - beta * D_hat) ** 2) / torch.sum(D**2))
+
+        return torch.mean(KS)
 
     @abstractmethod
     @torch.no_grad()

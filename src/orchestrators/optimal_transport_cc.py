@@ -220,8 +220,15 @@ class OptimalTransportCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def _compute_FOSCTTM(self):
-        test_shared_dataset = self.trainer.datamodule.test_shared_dataset
+    def _compute_FOSCTTM(
+        self,
+        split: str = 'train'
+    ) -> torch.Tensor:
+        shared_dataset = (
+            self.trainer.datamodule.train_shared_dataset
+            if split == 'train'
+            else self.trainer.datamodule.test_shared_dataset
+        )
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
         for i, dataset in enumerate(test_shared_dataset.values()):
