@@ -1,3 +1,5 @@
+_target_: src.DeepMimoDataModule
+
 scenario: city_3_houston_3p5
 download: true
 

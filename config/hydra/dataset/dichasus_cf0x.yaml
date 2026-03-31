@@ -1,4 +1,4 @@
-type: dichasus  # used by train.py to select DICHASUSDataModule
+_target_: src.DICHASUSDataModule
 
 data_dir: dichasus  # directory where .tfrecords and reftx-offsets-*.json are stored
 
@@ -30,12 +30,15 @@ test_split: 0.0
 # n_agents = number of groups; feature_dim scales with group size.
 # No aggregation (4 independent BSs):
 bs_aggregation:
-  - [0, 1, 2, 3]
+  - [0]
+  - [1]
+  - [2]
+  - [3]
 
 # Number of antennas per base station
 antennas_per_bs: 8
 
-batch_size: 256  # Reduced for lazy loading performance
+batch_size: 1024  # Reduced for lazy loading performance
 num_workers: 0
 pin_memory: true
 
@@ -54,8 +57,12 @@ n_neg: 10
 # No-aggregation chain topology across 4 physical BSs:
 edge_set:
   - [0, 1]
+  - [0, 2]
+  - [0, 3]
   - [1, 2]
+  - [1, 3]
   - [2, 3]
+
 # With bs_aggregation [[0,1],[2,3]], use:
 # edge_set:
 #   - [0, 1]

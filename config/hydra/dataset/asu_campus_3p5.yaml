@@ -1,3 +1,5 @@
+_target_: src.DeepMimoDataModule
+
 scenario: asu_campus_3p5
 download: true
 

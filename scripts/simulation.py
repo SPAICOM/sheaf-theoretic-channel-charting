@@ -15,7 +15,7 @@ from hydra.utils import instantiate
 from lightning import Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
 
-from src.datamodules.deepmimo import DeepMimoDataModule
+from src.datamodules.dichasus import DICHASUSDataModule
 from src.utils import remove_non_empty_dir
 
 
@@ -71,10 +71,8 @@ def main(cfg: DictConfig) -> None:
 
     # ===================================================
     #             Define the DataModule (first fold)
-    # ============================================
-    datamodule = DeepMimoDataModule(
-        cfg.dataset, anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0]
-    )
+    # ===================================================
+    datamodule = DICHASUSDataModule(cfg.dataset,anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0],)
     datamodule.prepare_data()
     datamodule.setup('fit')
 
@@ -119,9 +117,7 @@ def main(cfg: DictConfig) -> None:
 
         # For fold > 0, regenerate datamodule with new triplet seed
         if fold_idx > 0:
-            datamodule = DeepMimoDataModule(
-                cfg.dataset, anchor_seed=anchor_seed, triplet_seed=triplet_seeds[fold_idx]
-            )
+            datamodule = DICHASUSDataModule(cfg.dataset,anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0],)
             datamodule.prepare_data()
             datamodule.setup('fit')
 

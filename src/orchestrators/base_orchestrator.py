@@ -328,8 +328,12 @@ class BaseOrchestrator(l.LightningModule, ABC):
             New learning rate to use.
         """
         self.hparams.lr = lr
-        if hasattr(self, 'trainer') and self.trainer is not None:
-            optimizers = self.trainer.optimizers
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        if trainer is not None:
+            optimizers = trainer.optimizers
             if optimizers is not None:
                 for opt in optimizers:
                     for param_group in opt.param_groups:
@@ -364,7 +368,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
     # -------------------------------------------------------
 
     @torch.no_grad()
-    def build_trajectory(self, agent_idx: int, split: str = 'test'):
+    def build_trajectory(self, agent_idx: int, split: str = 'train'):
         """Build trajectory embeddings for train or test split.
 
         Parameters
