@@ -221,13 +221,15 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         tfrecord_path, record_idx = self.file_record_map[gidx]
         csi, _, _ = self._load_record(tfrecord_path, record_idx)
 
-        # Slice each physical BS's antennas and concatenate along antenna dim.
-        # For a single-BS group this is identical to the old scalar bs_id path.
+        # Preprocess each physical BS's antennas individually, then concatenate
+        # the resulting feature vectors (feature-wise concatenation).
         # BS k occupies antennas [k*apb : (k+1)*apb] in the raw array.
         apb = self.antennas_per_bs
-        slices = [csi[k * apb : (k + 1) * apb] for k in self.bs_ids]
-        csi_bs = np.concatenate(slices, axis=0)
-        return torch.from_numpy(csi_bs)
+        features = [
+            csi_to_realvec(torch.from_numpy(csi[k * apb : (k + 1) * apb]), method=self.preprocess)
+            for k in self.bs_ids
+        ]
+        return torch.cat(features, dim=0)
 
     def _pos_from_global_index(self, gidx: int) -> torch.Tensor:
         """Load position for a specific global index.
@@ -285,38 +287,19 @@ class LazyDICHASUSTrajectoryDataset(Dataset):
         y: torch.Tensor
 
         # Handle triplet vs contrastive modes
+        # _H_from_global_index already returns preprocessed feature vectors
         match self.pair_mode:
             case 'triplet':
                 # Triplet loss: anchor, positive, negative with fixed y=-1
-                xA = csi_to_realvec(H_A, method=self.preprocess)
-                xP = torch.vstack(
-                    [
-                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
-                        for i in pos_idxs
-                    ]
-                )
-                xN = torch.vstack(
-                    [
-                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
-                        for i in neg_idxs
-                    ]
-                )
+                xA = H_A
+                xP = torch.vstack([self._H_from_global_index(i) for i in pos_idxs])
+                xN = torch.vstack([self._H_from_global_index(i) for i in neg_idxs])
                 y = torch.tensor(-1, dtype=torch.long)
             case 'contrastive':
                 # Contrastive loss: randomly choose positive or negative as pair
-                xA = csi_to_realvec(H_A, method=self.preprocess)
-                xP = torch.vstack(
-                    [
-                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
-                        for i in pos_idxs
-                    ]
-                )
-                xN = torch.vstack(
-                    [
-                        csi_to_realvec(self._H_from_global_index(i), method=self.preprocess)
-                        for i in neg_idxs
-                    ]
-                )
+                xA = H_A
+                xP = torch.vstack([self._H_from_global_index(i) for i in pos_idxs])
+                xN = torch.vstack([self._H_from_global_index(i) for i in neg_idxs])
                 y = torch.tensor(
                     1 if self.rng.random() < self.p_positive else 0,
                     dtype=torch.long,
@@ -438,14 +421,17 @@ class LazyDICHASUSSharedDataset(Dataset):
         tfrecord_path, record_idx = self.file_record_map[gidx]
         csi = self._load_record(tfrecord_path, record_idx)
 
-        # Concatenate antenna slices for each physical BS group
+        # Preprocess each physical BS's antennas individually, then concatenate
+        # the resulting feature vectors (feature-wise concatenation).
         apb = self.antennas_per_bs
-        csi_bs_1 = np.concatenate([csi[k * apb : (k + 1) * apb] for k in self.bs_ids_1], axis=0)
-        csi_bs_2 = np.concatenate([csi[k * apb : (k + 1) * apb] for k in self.bs_ids_2], axis=0)
-
-        # Preprocess and convert to real-valued vector
-        H_1 = csi_to_realvec(torch.from_numpy(csi_bs_1), method=self.preprocess)
-        H_2 = csi_to_realvec(torch.from_numpy(csi_bs_2), method=self.preprocess)
+        H_1 = torch.cat(
+            [csi_to_realvec(torch.from_numpy(csi[k * apb : (k + 1) * apb]), method=self.preprocess) for k in self.bs_ids_1],
+            dim=0,
+        )
+        H_2 = torch.cat(
+            [csi_to_realvec(torch.from_numpy(csi[k * apb : (k + 1) * apb]), method=self.preprocess) for k in self.bs_ids_2],
+            dim=0,
+        )
 
         return H_1, H_2, (self.bs_ids_1[0], self.bs_ids_2[0])
 
