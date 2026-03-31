@@ -678,6 +678,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         split: str = 'train',
         prefix: str = 'trajectory',
         last_epoch_only: bool = False,
+        sample: float = 0.35,
     ) -> None:
         """Plot latent space trajectories with optional clustering or position-based coloring.
 
@@ -699,6 +700,8 @@ class BaseOrchestrator(l.LightningModule, ABC):
             Filename prefix for saved plots. Default: 'trajectory'.
         last_epoch_only : bool, optional
             If True, only plots at the final epoch. Default: False.
+        sample : float, optional
+            Fraction of data points to sample for plotting. Default: 0.35 (35%).
         """
         # Early exit: skip if not final epoch and last_epoch_only is enabled
         if last_epoch_only and self.current_epoch < self.trainer.max_epochs - 1:
@@ -710,6 +713,12 @@ class BaseOrchestrator(l.LightningModule, ABC):
             embs, pos, _, _ = self.build_trajectory(agent_idx=int(agent_idx), split=split)
             embs = embs.cpu()
             pos = pos.cpu()
+
+            if sample < 1.0:
+                n_samples = int(len(embs) * sample)
+                indices = torch.randperm(len(embs))[:n_samples]
+                embs = embs[indices]
+                pos = pos[indices]
 
             # Determine color scheme based on n_clusters parameter:
             # - n_clusters > 0: cluster-based coloring using KMeans

@@ -1,15 +1,47 @@
+"""Test module for DistanceLayer functionality.
+
+This module provides a simple distance computation layer supporting both
+euclidean and cosine distance modes. Primarily used for experimentation
+and testing purposes.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class DistanceLayer(nn.Module):
+    """Distance computation layer supporting euclidean and cosine metrics.
+
+    Computes pairwise distances between anchor embeddings and multiple
+    comparison embeddings (positive/negative samples).
+
+    Parameters
+    ----------
+    distance_mode : str
+        Distance metric to use. Options: 'euclidean', 'cosine'.
+    """
+
     def __init__(self, distance_mode: str) -> None:
         super().__init__()
         assert distance_mode in {'euclidean', 'cosine'}
         self.distance_mode = distance_mode
 
-    def forward(self, z1: torch.Tensor, z2: torch.Tensor):
+    def forward(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
+        """Compute distances between anchor and comparison embeddings.
+
+        Parameters
+        ----------
+        z1 : torch.Tensor
+            Anchor embeddings of shape (batch_size, embedding_dim).
+        z2 : torch.Tensor
+            Comparison embeddings of shape (batch_size, num_comparisons, embedding_dim).
+
+        Returns
+        -------
+        torch.Tensor
+            Sum of distances of shape (batch_size,).
+        """
         match self.distance_mode:
             case 'euclidean':
                 z1 = z1.unsqueeze(1)  # (B, 1, D)
@@ -24,6 +56,8 @@ class DistanceLayer(nn.Module):
                 sim = (z1 * z2).sum(-1)  # (B, K)
                 dist = 1 - sim  # (B, K)
                 return dist.sum(dim=1)  # (B,)
+
+        raise ValueError(f'Unknown distance_mode: {self.distance_mode}')
 
 
 # ---- TEST SCRIPT ----
