@@ -114,7 +114,7 @@ class Encoder(nn.Module):
         for i in range(self.num_hidden_layers - 1):
             x = self.linear_layers[i](x)
             x = self.act(x)
-            x = self.norm_layers[i](x)
+            # x = self.norm_layers[i](x)
             x = self.dropout_layers[i](x)
 
         # Final linear projection (no activation)

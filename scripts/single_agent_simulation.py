@@ -69,6 +69,9 @@ def main(cfg: DictConfig) -> None:
     datamodule = DICHASUSSingleAgentDataModule(
         cfg.dataset, anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0]
     )
+    # datamodule = DeepMimoSingleAgentDataModule(
+    #     cfg.dataset, anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0]
+    # )
     datamodule.prepare_data()
     datamodule.setup('fit')
 

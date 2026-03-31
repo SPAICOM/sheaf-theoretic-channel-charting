@@ -1080,7 +1080,7 @@ class DICHASUSDataModule(l.LightningDataModule):
         sample_csi = self.train_local_dataset[0]._H_from_global_index(
             list(self.train_local_dataset[0].idx_to_neg_pos.values())[0]['pos'][0]
         )
-        self.feature_dim = csi_to_realvec(sample_csi, method=self.preprocess).shape[0]
+        self.feature_dim = sample_csi.shape[0]
 
         self._setup_done = True
 
