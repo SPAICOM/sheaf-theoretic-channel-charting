@@ -370,6 +370,28 @@ class BaseOrchestrator(l.LightningModule, ABC):
                     for param_group in opt.param_groups:
                         param_group['lr'] = lr
 
+    def set_lmb_range(self, lmb_min: float, lmb_max: float) -> None:
+        """Set new lambda range for the alignment loss weight schedule.
+
+        Updates the lower and upper bounds used by the per-epoch lambda
+        scheduler (``on_train_epoch_start``).  Also resets the current
+        lambda to ``lmb_min`` so each fold starts from the bottom of
+        its own range.
+
+        Parameters
+        ----------
+        lmb_min : float
+            New lower bound for lambda.
+        lmb_max : float
+            New upper bound for lambda.
+        """
+        if 'lmb_min' in self.hparams:
+            self.hparams['lmb_min'] = lmb_min
+        if 'lmb_max' in self.hparams:
+            self.hparams['lmb_max'] = lmb_max
+        if hasattr(self, '_lmb'):
+            self._lmb = lmb_min
+
     def _compute_alpha(self, epoch: int) -> float:
         """Compute alpha using sigmoid function.
 
@@ -583,10 +605,10 @@ class BaseOrchestrator(l.LightningModule, ABC):
         N = pos.shape[0]
 
         for i in range(S):
-            idxs = torch.random.randint(
+            idxs = torch.randint(
                 low=0,
                 high=N,
-                size=(M),
+                size=(M,),
             )
             pos_sub = pos[idxs, :]
             embs_sub = embs[idxs, :]

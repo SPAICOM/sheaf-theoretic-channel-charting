@@ -149,6 +149,14 @@ class FederatedCC(BaseOrchestrator):
         - Each agent is always included in its own aggregation set.
         - Neighborhood structure is defined in ``self.hparams.neighbors``.
         """
+
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+
         # Convert ModuleDict string keys to integers for consistent indexing
         agents = {int(k): v for k, v in self.agents.items()}
 

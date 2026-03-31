@@ -207,6 +207,13 @@ class PersonalizedFederatedCC(BaseOrchestrator):
         -------
         None
         """
+        self.plot_latent_space(
+            split='train',
+            prefix='trajectory_train',
+            last_epoch_only=True,
+            n_clusters=self.hparams.n_clusters,
+        )
+
         # Convert ModuleDict string keys to integers
         agents = {int(k): v for k, v in self.agents.items()}
         new_states = {}
@@ -245,7 +252,7 @@ class PersonalizedFederatedCC(BaseOrchestrator):
 
         self.plot_latent_space(
             split='train',
-            prefix='trajectory_train',
+            prefix='trajectory_train_fed',
             last_epoch_only=True,
             n_clusters=self.hparams.n_clusters,
         )

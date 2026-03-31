@@ -4,53 +4,35 @@ defaults:
   - model: siameseNN
   - orchestrator: cover_sheaf
 
+dataset:
+  batch_size: 8192
+  num_workers: 0
+
 logger:
   _target_: lightning.pytorch.loggers.WandbLogger
-  project: sheaf_cc_mega_sim
+  project: sheaf_cc_night
   name: ${hydra:runtime.choices.orchestrator}_${now:%Y-%m-%d}_${now:%H-%M-%S}
   log_model: false
 
+save_model: true
+
 seed: 80
 
-# Multi-fold training configuration
-# Set num_folds > 1 to enable cross-validation style training
-num_folds: 1  # Number of folds (1 = single training run)
-anchor_seed: 80  # Seed for generating anchors (same across all folds)
-triplet_seeds: [100]  # Seeds for triplet sampling (one per fold)
-learning_rates: [0.001]  # Learning rates (one per fold, descending order recommended)
-separate_fold_runs: false  # If true, creates separate wandb run per fold
+num_folds: 4
+anchor_seed: 80
+triplet_seeds: [1,2,3,4]
+learning_rates: [1e-3, 1e-3, 1e-4, 1e-4]
+separate_fold_runs: false
 
 trainer:
-  max_epochs: 1
+  max_epochs: 5
   accelerator: auto
   devices: 1
   deterministic: false      
   num_sanity_val_steps: 0
-  log_every_n_steps: 10
+  log_every_n_steps: 5
 
 callbacks:
-  # lr_monitor:
-  #   _target_: lightning.pytorch.callbacks.LearningRateMonitor
-  #   logging_interval: step
-
-  # checkpoint:
-  #   _target_: lightning.pytorch.callbacks.ModelCheckpoint
-  #   monitor: val/total_loss
-  #   mode: min
-  #   save_top_k: 1
-  #   save_last: true
-
-  # early_stopping:
-  #   _target_: lightning.pytorch.callbacks.EarlyStopping
-  #   monitor: val/total_loss
-  #   patience: 5
-  #   mode: min
-
-  # batch_size_finder:
-  #   _target_: lightning.pytorch.callbacks.BatchSizeFinder
-  #   mode: power
-  #   init_val: 32
-  #   max_trials: 5
 
 hydra:
   mode: MULTIRUN

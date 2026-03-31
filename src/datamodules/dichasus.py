@@ -38,6 +38,7 @@ import torch
 import urllib3
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from omegaconf import DictConfig
+from scipy.cluster.vq import kmeans2
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -327,10 +328,14 @@ class LazyDICHASUSSharedDataset(Dataset):
         Number of antennas per base station.
     n_bs : int
         Number of base stations.
+    bs_ids_1 : list[int]
+        Antenna IDs belonging to the first virtual BS group.
+    bs_ids_2 : list[int]
+        Antenna IDs belonging to the second virtual BS group.
     idx_bs_1 : int
-        First base station ID (e.g., 0 for BS1).
+        Virtual BS group index for the first group (used as agent key).
     idx_bs_2 : int
-        Second base station ID (e.g., 1 for BS2).
+        Virtual BS group index for the second group (used as agent key).
     preprocess : str
         Preprocessing method for CSI.
     offsets_path : str | None
@@ -345,6 +350,8 @@ class LazyDICHASUSSharedDataset(Dataset):
         n_bs: int,
         bs_ids_1: list[int],
         bs_ids_2: list[int],
+        idx_bs_1: int,
+        idx_bs_2: int,
         preprocess: str = 'dichasus',
         offsets_path: str | None = None,
     ):
@@ -355,6 +362,8 @@ class LazyDICHASUSSharedDataset(Dataset):
         self.n_bs = n_bs
         self.bs_ids_1 = bs_ids_1
         self.bs_ids_2 = bs_ids_2
+        self.idx_bs_1 = idx_bs_1
+        self.idx_bs_2 = idx_bs_2
         self.total_antennas = antennas_per_bs * n_bs
         self.preprocess = preprocess
 
@@ -924,11 +933,67 @@ class DICHASUSDataModule(l.LightningDataModule):
 
         return sorted_file_record_map, timestamps_all, file_offsets
 
+    def _is_two_group_case(self) -> bool:
+        """Return True iff virtual_bs_groups == [[0,2],[1,3]] (any order within groups)."""
+        if len(self.virtual_bs_groups) != 2:
+            return False
+        groups = [sorted(g) for g in self.virtual_bs_groups]
+        return groups == [[0, 2], [1, 3]]
+
+    def _load_sorted_positions(self, stems: list[str]) -> np.ndarray:
+        """Load all positions sorted by timestamp (same order as _build_file_record_map).
+
+        Returns
+        -------
+        np.ndarray
+            Shape (N_total, 2), float64, sorted by timestamp.
+        """
+        all_positions: list[np.ndarray] = []
+        all_times: list[np.ndarray] = []
+        for stem in stems:
+            pos_mm = np.load(str(self.data_dir / f'{stem}_pos.npy'), mmap_mode='r')
+            time_mm = np.load(str(self.data_dir / f'{stem}_time.npy'), mmap_mode='r').ravel()
+            all_positions.append(pos_mm.copy())
+            all_times.append(time_mm)
+        positions = np.concatenate(all_positions, axis=0)
+        sort_idx = np.argsort(np.concatenate(all_times))
+        return positions[sort_idx]
+
+    def _compute_spatial_clusters_3(
+        self, positions: np.ndarray
+    ) -> dict[int, np.ndarray]:
+        """Run k-means (k=3) on 2-D positions and return rank-indexed index arrays.
+
+        Clusters are ranked by the diagonal projection ``x - 0.852*y``:
+        - rank 0: upper-left arm (most negative projection)
+        - rank 1: middle / corner region (shared between the two groups)
+        - rank 2: lower-right arm (most positive projection)
+
+        Parameters
+        ----------
+        positions : np.ndarray
+            Shape (N, 2), the sorted positions for the whole dataset.
+
+        Returns
+        -------
+        dict[int, np.ndarray]
+            Mapping from rank (0/1/2) to global index arrays belonging to that cluster.
+        """
+        centroids, labels = kmeans2(
+            positions.astype(np.float32), 3, seed=42, iter=50, minit='points'
+        )
+        # Rank by diagonal projection of centroid: low = upper-left, high = lower-right
+        diag_scores = centroids[:, 0] - 0.852 * centroids[:, 1]
+        rank_order = np.argsort(diag_scores)  # ascending
+        return {rank: np.where(labels == int(cluster_id))[0] for rank, cluster_id in enumerate(rank_order)}
+
     def _build_split(
         self,
         stems: list[str],
         split_indices: dict[str, np.ndarray],
         rng: np.random.Generator,
+        spatial_group_idxs: dict[int, np.ndarray] | None = None,
+        shared_spatial_idxs: np.ndarray | None = None,
     ) -> tuple[
         dict[int, LazyDICHASUSTrajectoryDataset],
         dict[tuple[int, int], LazyDICHASUSSharedDataset],
@@ -946,6 +1011,12 @@ class DICHASUSDataModule(l.LightningDataModule):
             Dict with 'train' key containing indices for this split.
         rng : np.random.Generator
             Random generator for pair selection.
+        spatial_group_idxs : dict[int, np.ndarray] | None
+            Optional mapping from virtual BS index to allowed global indices (spatial mask).
+            When provided, each virtual BS's valid_idxs is intersected with its spatial mask.
+        shared_spatial_idxs : np.ndarray | None
+            Optional array of global indices allowed for shared datasets (spatial mask).
+            When provided, shared dataset indices are further restricted to this set.
 
         Returns
         -------
@@ -974,9 +1045,12 @@ class DICHASUSDataModule(l.LightningDataModule):
 
         # Create one dataset per virtual BS (keyed by virtual BS index)
         for virt_id, phys_ids in enumerate(self.virtual_bs_groups):
+            base_idxs = split_indices.get('train', valid_idxs)
+            if spatial_group_idxs is not None and virt_id in spatial_group_idxs:
+                base_idxs = np.intersect1d(base_idxs, spatial_group_idxs[virt_id])
             local_datasets[virt_id] = LazyDICHASUSTrajectoryDataset(
                 idx_to_neg_pos=idx_to_neg_pos,
-                valid_idxs=split_indices.get('train', valid_idxs),
+                valid_idxs=base_idxs,
                 file_record_map=file_record_map,
                 timestamps=timestamps_all,
                 file_offsets=file_offsets,
@@ -999,16 +1073,21 @@ class DICHASUSDataModule(l.LightningDataModule):
         ]
 
         for v1, v2 in self.edge_set:
-            if len(train_anchor_idxs) == 0:
+            effective_shared_idxs = train_anchor_idxs
+            if shared_spatial_idxs is not None:
+                effective_shared_idxs = np.intersect1d(train_anchor_idxs, shared_spatial_idxs)
+            if len(effective_shared_idxs) == 0:
                 continue
 
             shared_datasets[(v1, v2)] = LazyDICHASUSSharedDataset(
-                shared_global_idxs=train_anchor_idxs,
+                shared_global_idxs=effective_shared_idxs,
                 file_record_map=file_record_map,
                 antennas_per_bs=apb,
                 n_bs=self.n_bs,
                 bs_ids_1=self.virtual_bs_groups[v1],
                 bs_ids_2=self.virtual_bs_groups[v2],
+                idx_bs_1=v1,
+                idx_bs_2=v2,
                 preprocess=self.preprocess,
                 offsets_path=offsets_path,
             )
@@ -1064,6 +1143,28 @@ class DICHASUSDataModule(l.LightningDataModule):
             val_indices = all_indices[n_train : n_train + n_val]
             test_indices = all_indices[n_train + n_val :]
 
+            # For the [[0,2],[1,3]] two-group configuration, compute 3-cluster spatial masks.
+            # Rank 0 = upper-left arm, rank 1 = middle/corner, rank 2 = lower-right arm.
+            # Group [0,2] (virt_id=0): middle + lower-right (ranks 1+2)
+            # Group [1,3] (virt_id=1): upper-left + middle (ranks 0+1)
+            # Shared datasets: middle cluster only (rank 1)
+            spatial_group_idxs: dict[int, np.ndarray] | None = None
+            shared_spatial_idxs: np.ndarray | None = None
+            if self._is_two_group_case():
+                sorted_positions = self._load_sorted_positions(self.file_stems)
+                rank_to_idxs = self._compute_spatial_clusters_3(sorted_positions)
+                virt_id_02 = next(
+                    i for i, g in enumerate(self.virtual_bs_groups) if sorted(g) == [0, 2]
+                )
+                virt_id_13 = next(
+                    i for i, g in enumerate(self.virtual_bs_groups) if sorted(g) == [1, 3]
+                )
+                spatial_group_idxs = {
+                    virt_id_02: np.concatenate([rank_to_idxs[1], rank_to_idxs[2]]),
+                    virt_id_13: np.concatenate([rank_to_idxs[0], rank_to_idxs[1]]),
+                }
+                shared_spatial_idxs = rank_to_idxs[1]
+
             # Build datasets for each split
             # Note: Each split gets its own dataset with filtered valid_idxs
             # But they share the same file_record_map (lazy loading works across splits)
@@ -1071,19 +1172,37 @@ class DICHASUSDataModule(l.LightningDataModule):
                 self.train_local_dataset,
                 self.train_shared_dataset,
                 self.train_traj_dict,
-            ) = self._build_split(self.file_stems, {'train': train_indices}, triplet_rng)
+            ) = self._build_split(
+                self.file_stems,
+                {'train': train_indices},
+                triplet_rng,
+                spatial_group_idxs=spatial_group_idxs,
+                shared_spatial_idxs=shared_spatial_idxs,
+            )
 
             (
                 self.val_local_dataset,
                 self.val_shared_dataset,
                 self.val_traj_dict,
-            ) = self._build_split(self.file_stems, {'train': val_indices}, triplet_rng)
+            ) = self._build_split(
+                self.file_stems,
+                {'train': val_indices},
+                triplet_rng,
+                spatial_group_idxs=spatial_group_idxs,
+                shared_spatial_idxs=shared_spatial_idxs,
+            )
 
             (
                 self.test_local_dataset,
                 self.test_shared_dataset,
                 self.test_traj_dict,
-            ) = self._build_split(self.file_stems, {'train': test_indices}, triplet_rng)
+            ) = self._build_split(
+                self.file_stems,
+                {'train': test_indices},
+                triplet_rng,
+                spatial_group_idxs=spatial_group_idxs,
+                shared_spatial_idxs=shared_spatial_idxs,
+            )
 
         # Compute feature dimension from a sample
         # This triggers the first lazy load (and caching)

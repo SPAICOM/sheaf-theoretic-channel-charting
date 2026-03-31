@@ -1,6 +1,7 @@
 """"""
 
 # Add root to the path
+import math
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ sys.path.append(str(Path(sys.path[0]).parent))
 
 from collections import defaultdict
 
+import torch
 import hydra
 from hydra.utils import instantiate
 
@@ -106,6 +108,27 @@ def main(cfg: DictConfig) -> None:
         _convert_='all',
     )
 
+    # ===================================================
+    #        External Lambda Schedule (across folds)
+    # ===================================================
+    # If the orchestrator has a lambda schedule (lmb_schedule is not None),
+    # build an external cosine schedule that partitions [lmb_min, lmb_max]
+    # into num_folds intervals.  Fold i then runs its internal scheduler
+    # inside [external_lambdas[i], external_lambdas[i+1]].
+    lmb_schedule = cfg.orchestrator.get('lmb_schedule', None)
+    if lmb_schedule is not None and num_folds > 1:
+        lmb_min_global = float(cfg.orchestrator.get('lmb_min', 0.0))
+        lmb_max_global = float(cfg.orchestrator.get('lmb_max', 1.0))
+        external_lambdas = [
+            lmb_min_global
+            + (lmb_max_global - lmb_min_global)
+            * (1 - math.cos(math.pi * i / num_folds))
+            / 2
+            for i in range(num_folds + 1)
+        ]
+    else:
+        external_lambdas = None
+
     # -------------------------
     # Multi-fold Training
     # -------------------------
@@ -114,10 +137,19 @@ def main(cfg: DictConfig) -> None:
         print(f'Starting Fold {fold_idx + 1}/{num_folds}')
         print(f'  triplet_seed: {triplet_seeds[fold_idx]}')
         print(f'  learning_rate: {learning_rates[fold_idx]}')
+        if external_lambdas is not None:
+            print(f'  lmb_range: [{external_lambdas[fold_idx]:.4f}, {external_lambdas[fold_idx + 1]:.4f}]')
         print(f'{"=" * 50}\n')
 
         # Set learning rate for this fold
         orchestrator.set_lr(learning_rates[fold_idx])
+
+        # Apply external lambda range for this fold
+        if external_lambdas is not None:
+            orchestrator.set_lmb_range(
+                lmb_min=external_lambdas[fold_idx],
+                lmb_max=external_lambdas[fold_idx + 1],
+            )
 
         # For fold > 0, regenerate datamodule with new triplet seed
         if fold_idx > 0:
@@ -158,6 +190,33 @@ def main(cfg: DictConfig) -> None:
     # Test (on final fold)
     # -------------------------
     orchestrator.eval_all(K_max=10)
+
+    # ===================================================
+    #                  Save Model
+    # ===================================================
+    if cfg.get('save_model', False):
+        CHECKPOINTS_PATH = CURRENT / 'checkpoints/'
+        CHECKPOINTS_PATH.mkdir(exist_ok=True, parents=True)
+
+        project_name = cfg.logger.project
+        run_name = str(logger.name) if logger is not None else 'run'
+        safe_run_name = run_name.replace('/', '_').replace(':', '-')
+
+        train_loss = trainer.callback_metrics.get('train/total_loss', torch.tensor(0.0))
+        if hasattr(train_loss, 'item'):
+            train_loss = train_loss.item()
+
+        max_epochs = cfg.trainer.max_epochs
+
+        ckpt_name = (
+            f'{project_name}_{safe_run_name}'
+            f'_loss{train_loss:.4f}'
+            f'_epochs{max_epochs}'
+            f'_folds{num_folds}.pt'
+        )
+        ckpt_path = CHECKPOINTS_PATH / ckpt_name
+        torch.save(orchestrator, ckpt_path)
+        print(f'Model saved to {ckpt_path}')
 
     # Cleaning the working space
     remove_non_empty_dir('./multirun/')
