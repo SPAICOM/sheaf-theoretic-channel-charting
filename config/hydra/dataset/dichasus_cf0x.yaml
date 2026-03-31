@@ -30,10 +30,10 @@ test_split: 0.0
 # n_agents = number of groups; feature_dim scales with group size.
 # No aggregation (4 independent BSs):
 bs_aggregation:
-  - [0]
-  - [1]
-  - [2]
-  - [3]
+  - [0,1,2,3]
+  # - [1]
+  # - [2]
+  # - [3]
 
 # Number of antennas per base station
 antennas_per_bs: 8
@@ -49,8 +49,8 @@ preprocess: dichasus  # subcarrier-chunk averaging (matches DICHASUS tutorial)
 Tc_pos: 1.5
 
 pair_mode: triplet
-n_pos: 10
-n_neg: 10
+n_pos: 1
+n_neg: 1
 
 # BS-pair edges for shared (inter-BS alignment) datasets.
 # Indices are virtual BS indices (0-indexed into bs_aggregation groups).

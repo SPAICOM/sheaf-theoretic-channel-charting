@@ -533,8 +533,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         N = pos.shape[0]
 
         for i in range(S):
-            idxs = torch.random.randint(low=0,high=N,size=M)
-
+            idxs = torch.random.randint(low=0, high=N, size=(M),)
             pos_sub = pos[idxs,:]
             embs_sub = embs[idxs,:]
 

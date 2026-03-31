@@ -106,19 +106,19 @@ class SingleAgentModule(l.LightningModule):
     def test_step(self, batch, batch_idx: int) -> None:
         self._shared_eval(batch, batch_idx, 'test')
 
-    def on_train_epoch_end(self) -> None:
-        self.plot_latent_space(
-            split='test',
-            prefix='trajectory_test',
-            last_epoch_only=True,
-            n_clusters=self.hparams.n_clusters,
-        )
-        self.plot_latent_space(
-            split='train',
-            prefix='trajectory_train',
-            last_epoch_only=True,
-            n_clusters=self.hparams.n_clusters,
-        )
+    # def on_train_epoch_end(self) -> None:
+    #     self.plot_latent_space(
+    #         split='test',
+    #         prefix='trajectory_test',
+    #         last_epoch_only=True,
+    #         n_clusters=self.hparams.n_clusters,
+    #     )
+    #     self.plot_latent_space(
+    #         split='train',
+    #         prefix='trajectory_train',
+    #         last_epoch_only=True,
+    #         n_clusters=self.hparams.n_clusters,
+    #     )
 
     def configure_optimizers(self) -> dict[str, Any]:
         optimizer = torch.optim.Adam(
@@ -200,6 +200,7 @@ class SingleAgentModule(l.LightningModule):
         pos_KDTree: scipy.spatial.KDTree,
         K: int,
     ) -> torch.Tensor:
+        print('Computing Continuity')
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
         CT = torch.zeros(N)
@@ -219,6 +220,7 @@ class SingleAgentModule(l.LightningModule):
         embs_KDTree: scipy.spatial.KDTree,
         K: int,
     ) -> torch.Tensor:
+        print('Computing Trustworthiness')
         N = pos.shape[0]
         F = 2 / (K * (2 * N - 3 * K - 1))
         TW = torch.zeros(N)
@@ -235,13 +237,58 @@ class SingleAgentModule(l.LightningModule):
         self,
         embs: torch.Tensor,
         pos: torch.Tensor,
+        M: int=1000,
+        S: int=100
     ) -> torch.Tensor:
-        DD = (pos**2).sum(dim=1, keepdim=True)
-        D = torch.sqrt(torch.clamp(DD + DD.T - 2 * (pos @ pos.T), min=0.0))
-        DD_hat = (embs**2).sum(dim=1, keepdim=True)
-        D_hat = torch.sqrt(torch.clamp(DD_hat + DD_hat.T - 2 * (embs @ embs.T), min=0.0))
-        beta = torch.sum(D * D_hat) / torch.sum(D**2)
-        return torch.sqrt(torch.sum((D - beta * D_hat) ** 2) / torch.sum(D**2))
+        """Compute Montecarlo-estimate of Kruskal stress metric.
+
+        Kruskal stress measures the goodness of fit between distances
+        in the original space and the embedding space using least squares.
+
+        Parameters
+        ----------
+        embs : torch.Tensor
+            Embeddings of shape (N, d).
+        pos : torch.Tensor
+            Original positions of shape (N, 2).
+        M : int
+            Number of sampled points 
+        S : int
+            Number of samples trajectories
+        Returns
+        -------
+        torch.Tensor
+            Kruskal stress value.
+        """
+        # Distance in the original space
+        print('Computing Kruskal Stress')
+        KS = torch.zeros(S)
+        N = pos.shape[0]
+
+        for i in range(S):
+            idxs = torch.randint(low=0, high=N, size=(M,))
+
+            pos_sub = pos[idxs,:]
+            embs_sub = embs[idxs,:]
+
+            DD = (pos_sub**2).sum(dim=1, keepdim=True)  # (N, 1)
+            D = DD + DD.T - 2 * (pos_sub @ pos_sub.T)
+            D = torch.clamp(D, min=0.0)
+            D = torch.sqrt(D)
+
+            # Distance in the embedding space
+            DD_hat = (embs_sub**2).sum(dim=1, keepdim=True)  # (N, 1)
+            D_hat = DD_hat + DD_hat.T - 2 * (embs_sub @ embs_sub.T)
+            D_hat = torch.clamp(D_hat, min=0.0)
+            D_hat = torch.sqrt(D_hat)
+
+            # Compute optimal scaling factor
+            beta = torch.sum(D * D_hat) / torch.sum(D**2)
+
+            # Compute Kruskal stress
+            KS[i] = torch.sqrt(torch.sum((D - beta * D_hat) ** 2) / torch.sum(D**2))
+
+        return torch.mean(KS)
 
     def eval_all(
         self, K_max: int, K_min: int = 2, step: int = 1, split: str = 'train'
@@ -257,6 +304,7 @@ class SingleAgentModule(l.LightningModule):
             'CT': defaultdict(float),
             'TW': defaultdict(float),
         }
+
         for K in range(K_min, K_max + 1, step):
             res['CT'][K] = self.compute_continuity(embs=embs, pos=pos, pos_KDTree=pos_KDTree, K=K)
             res['TW'][K] = self.compute_trustworthiness(
