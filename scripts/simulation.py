@@ -72,7 +72,11 @@ def main(cfg: DictConfig) -> None:
     # ===================================================
     #             Define the DataModule (first fold)
     # ===================================================
-    datamodule = DICHASUSDataModule(cfg.dataset,anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0],)
+    datamodule = DICHASUSDataModule(
+        cfg.dataset,
+        anchor_seed=anchor_seed,
+        triplet_seed=triplet_seeds[0],
+    )
     datamodule.prepare_data()
     datamodule.setup('fit')
 
@@ -117,7 +121,11 @@ def main(cfg: DictConfig) -> None:
 
         # For fold > 0, regenerate datamodule with new triplet seed
         if fold_idx > 0:
-            datamodule = DICHASUSDataModule(cfg.dataset,anchor_seed=anchor_seed, triplet_seed=triplet_seeds[0],)
+            datamodule = DICHASUSDataModule(
+                cfg.dataset,
+                anchor_seed=anchor_seed,
+                triplet_seed=triplet_seeds[0],
+            )
             datamodule.prepare_data()
             datamodule.setup('fit')
 

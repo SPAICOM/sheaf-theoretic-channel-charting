@@ -425,11 +425,21 @@ class LazyDICHASUSSharedDataset(Dataset):
         # the resulting feature vectors (feature-wise concatenation).
         apb = self.antennas_per_bs
         H_1 = torch.cat(
-            [csi_to_realvec(torch.from_numpy(csi[k * apb : (k + 1) * apb]), method=self.preprocess) for k in self.bs_ids_1],
+            [
+                csi_to_realvec(
+                    torch.from_numpy(csi[k * apb : (k + 1) * apb]), method=self.preprocess
+                )
+                for k in self.bs_ids_1
+            ],
             dim=0,
         )
         H_2 = torch.cat(
-            [csi_to_realvec(torch.from_numpy(csi[k * apb : (k + 1) * apb]), method=self.preprocess) for k in self.bs_ids_2],
+            [
+                csi_to_realvec(
+                    torch.from_numpy(csi[k * apb : (k + 1) * apb]), method=self.preprocess
+                )
+                for k in self.bs_ids_2
+            ],
             dim=0,
         )
 

@@ -244,12 +244,6 @@ class PersonalizedFederatedCC(BaseOrchestrator):
             agent.load_state_dict(new_states[idx_i])
 
         self.plot_latent_space(
-            split='test',
-            prefix='trajectory_test',
-            last_epoch_only=True,
-            n_clusters=self.hparams.n_clusters,
-        )
-        self.plot_latent_space(
             split='train',
             prefix='trajectory_train',
             last_epoch_only=True,

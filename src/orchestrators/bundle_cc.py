@@ -191,12 +191,6 @@ class BundleCC(BaseOrchestrator):
         self.orthogonal_maps = orthogonal_maps_temp
 
         self.plot_latent_space(
-            split='test',
-            prefix='trajectory_test',
-            last_epoch_only=True,
-            n_clusters=self.hparams.n_clusters,
-        )
-        self.plot_latent_space(
             split='train',
             prefix='trajectory_train',
             last_epoch_only=True,
@@ -306,10 +300,7 @@ class BundleCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def _compute_FOSCTTM(
-        self,
-        split: str = 'train'
-    ) -> torch.Tensor:
+    def _compute_FOSCTTM(self, split: str = 'train') -> torch.Tensor:
         shared_dataset = (
             self.trainer.datamodule.train_shared_dataset
             if split == 'train'
@@ -317,7 +308,7 @@ class BundleCC(BaseOrchestrator):
         )
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
-        for i, dataset in enumerate(test_shared_dataset.values()):
+        for i, dataset in enumerate(shared_dataset.values()):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)

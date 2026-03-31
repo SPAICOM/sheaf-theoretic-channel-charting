@@ -453,13 +453,13 @@ class BaseOrchestrator(l.LightningModule, ABC):
             # Mask self
             D_chunk[torch.arange(B), torch.arange(start, end)] = float('inf')
             # Distances to the K position-space neighbors
-            Ux_chunk = Ux_all[start:end]           # (B, K)
+            Ux_chunk = Ux_all[start:end]  # (B, K)
             d_neighbors = D_chunk.gather(1, Ux_chunk)  # (B, K)
             # Rank of neighbor k = 1 + #{points with smaller distance}
             # Loop over K to keep peak memory at O(B*N) instead of O(B*N*K)
             r = torch.zeros(B, K, dtype=torch.long)
             for k in range(K):
-                r[:, k] = (D_chunk < d_neighbors[:, k:k+1]).sum(dim=1) + 1
+                r[:, k] = (D_chunk < d_neighbors[:, k : k + 1]).sum(dim=1) + 1
             penalties[start:end] = torch.clamp(r - K, min=0).float().sum(dim=1)
 
         return torch.mean(1 - F * penalties)
@@ -513,23 +513,19 @@ class BaseOrchestrator(l.LightningModule, ABC):
             # Mask self
             D_chunk[torch.arange(B), torch.arange(start, end)] = float('inf')
             # Distances to the K embedding-space neighbors
-            Vx_chunk = Vx_all[start:end]               # (B, K)
+            Vx_chunk = Vx_all[start:end]  # (B, K)
             d_neighbors = D_chunk.gather(1, Vx_chunk)  # (B, K)
             # Rank of neighbor k = 1 + #{points with smaller distance}
             # Loop over K to keep peak memory at O(B*N) instead of O(B*N*K)
             r = torch.zeros(B, K, dtype=torch.long)
             for k in range(K):
-                r[:, k] = (D_chunk < d_neighbors[:, k:k+1]).sum(dim=1) + 1
+                r[:, k] = (D_chunk < d_neighbors[:, k : k + 1]).sum(dim=1) + 1
             penalties[start:end] = torch.clamp(r - K, min=0).float().sum(dim=1)
 
         return torch.mean(1 - F * penalties)
 
     def compute_kruskal_stress(
-        self,
-        embs: torch.Tensor,
-        pos: torch.Tensor,
-        M: int=1000,
-        S: int=1000
+        self, embs: torch.Tensor, pos: torch.Tensor, M: int = 1000, S: int = 1000
     ) -> torch.Tensor:
         """Compute Montecarlo-estimate of Kruskal stress metric.
 
@@ -543,7 +539,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         pos : torch.Tensor
             Original positions of shape (N, 2).
         M : int
-            Number of sampled points 
+            Number of sampled points
         S : int
             Number of samples trajectories
         Returns
@@ -556,9 +552,13 @@ class BaseOrchestrator(l.LightningModule, ABC):
         N = pos.shape[0]
 
         for i in range(S):
-            idxs = torch.random.randint(low=0, high=N, size=(M),)
-            pos_sub = pos[idxs,:]
-            embs_sub = embs[idxs,:]
+            idxs = torch.random.randint(
+                low=0,
+                high=N,
+                size=(M),
+            )
+            pos_sub = pos[idxs, :]
+            embs_sub = embs[idxs, :]
 
             DD = (pos_sub**2).sum(dim=1, keepdim=True)  # (N, 1)
             D = DD + DD.T - 2 * (pos_sub @ pos_sub.T)
@@ -614,7 +614,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         for agent_idx in self.agents:
             embs, pos, embs_KDTree, pos_KDTree = self.build_trajectory(
                 agent_idx=int(agent_idx),
-                split='test',
+                split='train',
             )
             res['KS'].append(self.compute_kruskal_stress(embs=embs, pos=pos))
             for K in range(K_min, K_max + 1, step):
@@ -644,7 +644,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         self,
         output_dir: Path = Path('imgs'),
         n_clusters: int | None = None,
-        split: str = 'test',
+        split: str = 'train',
         prefix: str = 'trajectory',
         last_epoch_only: bool = False,
     ) -> None:
