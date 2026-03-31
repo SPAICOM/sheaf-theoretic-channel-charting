@@ -13,7 +13,6 @@ logger:
 seed: 80
 
 # Multi-fold training configuration
-# Set num_folds > 1 to enable cross-validation style training
 num_folds: 8  # Number of folds (1 = single training run)
 anchor_seed: 80  # Seed for generating anchors (same across all folds)
 triplet_seeds: [1,2,3,4,5,6,7,8]  # Seeds for triplet sampling (one per fold)
@@ -25,7 +24,7 @@ trainer:
   accelerator: auto
   devices: 1
   deterministic: false
-  num_sanity_val_steps: 2
+  num_sanity_val_steps: 0
   log_every_n_steps: 10
 
 callbacks: null

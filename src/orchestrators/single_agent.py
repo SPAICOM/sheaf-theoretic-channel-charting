@@ -168,12 +168,18 @@ class SingleAgentModule(l.LightningModule):
 
     @torch.no_grad()
     def build_trajectory(self, split: str = 'test'):
-        """Build trajectory embeddings for train or test split."""
+        """Build trajectory embeddings for train or test split.
+
+        Returns None when the requested split is empty (e.g. test_split=0).
+        """
         dataset = (
             self.trainer.datamodule.train_local_dataset
             if split == 'train'
             else self.trainer.datamodule.test_local_dataset
         )
+        if len(dataset[0]) == 0:
+            return None
+
         loader = DataLoader(dataset[0], batch_size=64, shuffle=False)
 
         embs_list, pos_list = [], []
@@ -241,7 +247,10 @@ class SingleAgentModule(l.LightningModule):
         self, K_max: int, K_min: int = 2, step: int = 1, split: str = 'train'
     ) -> dict[str, Any]:
         """Compute and log continuity, trustworthiness, and Kruskal stress."""
-        embs, pos, embs_KDTree, pos_KDTree = self.build_trajectory(split=split)
+        result = self.build_trajectory(split=split)
+        if result is None:
+            return {}
+        embs, pos, embs_KDTree, pos_KDTree = result
 
         res: dict[str, Any] = {
             'KS': self.compute_kruskal_stress(embs=embs, pos=pos),
@@ -297,7 +306,10 @@ class SingleAgentModule(l.LightningModule):
         if self.agent.out_dim != 2:
             return
 
-        embs, pos, _, _ = self.build_trajectory(split=split)
+        result = self.build_trajectory(split=split)
+        if result is None:
+            return
+        embs, pos, _, _ = result
         embs = embs.cpu()
         pos = pos.cpu()
 

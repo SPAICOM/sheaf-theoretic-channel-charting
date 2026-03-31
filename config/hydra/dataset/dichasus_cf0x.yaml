@@ -10,9 +10,9 @@ files:
 
 # Sample-level split (splits from loaded files).
 # If set, train_files/val_files/test_files are ignored.
-train_split: 0.7
-val_split: 0.15
-test_split: 0.15
+train_split: 1.
+val_split: 0.0
+test_split: 0.0
 
 # File-level split (deprecated if train_split is set above).
 # Each is a list of file stems.
@@ -30,8 +30,7 @@ test_split: 0.15
 # n_agents = number of groups; feature_dim scales with group size.
 # No aggregation (4 independent BSs):
 bs_aggregation:
-  - [0, 1]
-  - [2, 3]
+  - [0, 1, 2, 3]
 
 # Number of antennas per base station
 antennas_per_bs: 8
@@ -42,11 +41,9 @@ pin_memory: true
 
 preprocess: dichasus  # subcarrier-chunk averaging (matches DICHASUS tutorial)
 
-# Time-coherence windows (seconds)
-#   Positives : |Δt| ≤ Tc_pos
-#   Negatives : Tc_pos < |Δt| ≤ Tc_neg
+# Time-coherence window for positives (seconds): |Δt| ≤ Tc_pos
+# Negatives are drawn from the full dataset outside this window (no upper bound).
 Tc_pos: 1.5
-Tc_neg: 5.0
 
 pair_mode: triplet
 n_pos: 10

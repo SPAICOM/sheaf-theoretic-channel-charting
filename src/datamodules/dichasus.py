@@ -531,7 +531,6 @@ class DICHASUSDataModule(l.LightningDataModule):
         'bs_aggregation': [[0], [1], [2]],
         'antennas_per_bs': 8,
         'Tc_pos': 1.5,  # Positive time-coherence window (seconds)
-        'Tc_neg': 5.0,  # Negative time-coherence window (seconds)
         'pair_mode': 'triplet',
         'p_positive': 0.5,
         'n_pos': None,  # Max positives per anchor (None = all)
@@ -594,9 +593,8 @@ class DICHASUSDataModule(l.LightningDataModule):
         self.antennas_per_bs: int = int(self.cfg['antennas_per_bs'])
         self.total_antennas: int = 32  # Raw DICHASUS cf0x has 32 antennas total
 
-        # Time-coherence parameters for positive/negative pair selection
+        # Time-coherence parameter for positive pair selection
         self.Tc_pos = float(self.cfg['Tc_pos'])
-        self.Tc_neg = float(self.cfg['Tc_neg'])
         self.preprocess: str = self.cfg.get('preprocess', 'dichasus')
 
         # n_agents is the number of virtual (possibly aggregated) BSs
@@ -612,9 +610,6 @@ class DICHASUSDataModule(l.LightningDataModule):
             v1, v2 = int(e[0]), int(e[1])
             if v1 < n_virt and v2 < n_virt:
                 self.edge_set.append((v1, v2))
-
-        # Validate configuration
-        assert self.Tc_neg > self.Tc_pos, '"Tc_neg" must be greater than "Tc_pos"'
 
     def prepare_data(self) -> None:
         """Download TFRecord files and calibration offsets.
@@ -811,7 +806,8 @@ class DICHASUSDataModule(l.LightningDataModule):
         Uses binary search on sorted timestamps for O(N log N) complexity.
 
         Positive samples: |Δt| ≤ Tc_pos (samples close in time)
-        Negative samples: Tc_pos < |Δt| ≤ Tc_neg (samples far enough in time)
+        Negative samples: |Δt| > Tc_pos (any sample outside the positive window,
+            drawn from the full dataset — matches DICHASUS tutorial approach)
 
         Parameters
         ----------
@@ -834,6 +830,8 @@ class DICHASUSDataModule(l.LightningDataModule):
         n_neg = self.cfg.get('n_neg')
         idx_to_neg_pos: dict = {}
 
+        all_indices = np.arange(N, dtype=np.int64)
+
         for i in range(N):
             t = timestamps[i]
 
@@ -843,11 +841,11 @@ class DICHASUSDataModule(l.LightningDataModule):
             pos_local = np.arange(lo_pos, hi_pos, dtype=np.int64)
             pos_local = pos_local[pos_local != i]  # Exclude self
 
-            # Find negative samples: outside Tc_pos but within Tc_neg
-            lo_neg = int(np.searchsorted(timestamps, t - self.Tc_neg, side='left'))
-            hi_neg = int(np.searchsorted(timestamps, t + self.Tc_neg, side='right'))
-            neg_candidates = np.arange(lo_neg, hi_neg, dtype=np.int64)
-            neg_local = neg_candidates[(neg_candidates < lo_pos) | (neg_candidates >= hi_pos)]
+            # Find negative samples: any sample outside the positive window.
+            # Matches the DICHASUS tutorial approach: negatives are drawn from the
+            # full dataset rather than a restricted Tc_neg window, so they are
+            # statistically far in space from the anchor.
+            neg_local = all_indices[(all_indices < lo_pos) | (all_indices >= hi_pos)]
 
             # Skip if not enough samples
             if len(pos_local) == 0 or len(neg_local) == 0:
