@@ -189,7 +189,6 @@ class BundleCC(BaseOrchestrator):
             orthogonal_maps_temp[edge] = U @ Vt
 
         self.orthogonal_maps = orthogonal_maps_temp
-
         self.plot_latent_space(
             split='train',
             prefix='trajectory_train',

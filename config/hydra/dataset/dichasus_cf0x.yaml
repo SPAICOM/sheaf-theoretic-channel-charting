@@ -13,55 +13,25 @@ files:
 train_split: 1.
 val_split: 0.0
 test_split: 0.0
-
-# File-level split (deprecated if train_split is set above).
-# Each is a list of file stems.
-# train_files:
-#   - dichasus-cf02
-#   - dichasus-cf03
-#   - dichasus-cf04
-# val_files:
-#   - dichasus-cf05
-# test_files:
-#   - dichasus-cf06
-
-# Virtual BS groups: each inner list is one virtual BS made of physical BS IDs.
-# Single-element lists = no aggregation (each physical BS is its own virtual BS).
-# n_agents = number of groups; feature_dim scales with group size.
-# No aggregation (4 independent BSs):
 bs_aggregation:
-  - [0,1,2,3]
-  # - [1]
-  # - [2]
-  # - [3]
-
-# Number of antennas per base station
+  - [0, 1]
+  - [2, 3]
 antennas_per_bs: 8
-
-batch_size: 1024  # Reduced for lazy loading performance
+batch_size: 8192  # Reduced for lazy loading performance
 num_workers: 0
 pin_memory: true
-
 preprocess: dichasus  # subcarrier-chunk averaging (matches DICHASUS tutorial)
-
-# Time-coherence window for positives (seconds): |Δt| ≤ Tc_pos
-# Negatives are drawn from the full dataset outside this window (no upper bound).
 Tc_pos: 1.5
-
 pair_mode: triplet
-n_pos: 1
-n_neg: 1
-
-# BS-pair edges for shared (inter-BS alignment) datasets.
-# Indices are virtual BS indices (0-indexed into bs_aggregation groups).
-# No-aggregation chain topology across 4 physical BSs:
+n_pos: 2
+n_neg: 2
 edge_set:
   - [0, 1]
-  - [0, 2]
-  - [0, 3]
-  - [1, 2]
-  - [1, 3]
-  - [2, 3]
+  # - [0, 2]
+  # - [0, 3]
+  # - [1, 2]
+  # - [1, 3]
+  # - [2, 3]
 
 # With bs_aggregation [[0,1],[2,3]], use:
 # edge_set:

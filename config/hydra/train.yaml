@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - dataset: city_3_houston_3p5
+  - dataset: dichasus_cf0x
   - model: siameseNN
   - orchestrator: cover_sheaf
 
@@ -21,11 +21,11 @@ learning_rates: [0.001]  # Learning rates (one per fold, descending order recomm
 separate_fold_runs: false  # If true, creates separate wandb run per fold
 
 trainer:
-  max_epochs: 20
+  max_epochs: 1
   accelerator: auto
   devices: 1
   deterministic: false      
-  num_sanity_val_steps: 2
+  num_sanity_val_steps: 0
   log_every_n_steps: 10
 
 callbacks:

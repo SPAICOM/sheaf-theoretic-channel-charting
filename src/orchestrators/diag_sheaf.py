@@ -108,7 +108,6 @@ class DiagSheafCC(BaseOrchestrator):
             diagonal_maps_temp[edge] = D
 
         self.diagonal_maps = diagonal_maps_temp
-
         self.plot_latent_space(
             split='train',
             prefix='trajectory_train',
@@ -214,15 +213,11 @@ class DiagSheafCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def _compute_FOSCTTM(self, split: str = 'train') -> torch.Tensor:
-        shared_dataset = (
-            self.trainer.datamodule.train_shared_dataset
-            if split == 'train'
-            else self.trainer.datamodule.test_shared_dataset
-        )
+    def _compute_FOSCTTM(self):
+        test_shared_dataset = self.trainer.datamodule.test_shared_dataset
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
-        for i, dataset in enumerate(shared_dataset.values()):
+        for i, dataset in enumerate(test_shared_dataset.values()):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)

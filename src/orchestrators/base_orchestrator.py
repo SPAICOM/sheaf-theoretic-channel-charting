@@ -35,6 +35,8 @@ import torch.nn as nn
 from scipy.spatial import KDTree
 from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
+from torch.nn.parallel import parallel_apply
+
 
 
 class BaseOrchestrator(l.LightningModule, ABC):
@@ -150,6 +152,35 @@ class BaseOrchestrator(l.LightningModule, ABC):
             outputs[idx] = out
 
         return outputs
+    
+    # def forward(
+    #     self,
+    #     combined_batch: dict[int, list[torch.Tensor]],
+    # ) -> dict[int, torch.Tensor]:
+    #     """Forward pass through all agents in parallel.
+
+    #     Uses torch.nn.parallel.parallel_apply for GPU parallelism with
+    #     automatic CPU fallback via ThreadPoolExecutor-equivalent internals.
+
+    #     Parameters
+    #     ----------
+    #     combined_batch : dict[int, list[torch.Tensor]]
+    #         Dictionary mapping agent indices to their input tensors.
+    #         Each value is a list containing [anchor, positive, negative] tensors.
+
+    #     Returns
+    #     -------
+    #     dict[int, torch.Tensor]
+    #         Dictionary mapping agent indices to their output embeddings.
+    #     """
+
+    #     idx_strs = list(self.agents.keys())
+    #     modules  = list(self.agents.values())
+    #     inputs   = [(combined_batch[int(idx)],) for idx in idx_strs]
+
+    #     results = parallel_apply(modules, inputs)
+
+    #     return {int(idx): out for idx, out in zip(idx_strs, results)}
 
     @abstractmethod
     def _shared_eval(

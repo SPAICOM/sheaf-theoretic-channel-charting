@@ -182,7 +182,7 @@ class FederatedCC(BaseOrchestrator):
 
         self.plot_latent_space(
             split='train',
-            prefix='trajectory_train',
+            prefix='trajectory_train_fed',
             last_epoch_only=True,
             n_clusters=self.hparams.n_clusters,
         )
