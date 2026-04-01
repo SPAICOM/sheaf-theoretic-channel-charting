@@ -199,7 +199,7 @@ def main(cfg: DictConfig) -> None:
         CHECKPOINTS_PATH.mkdir(exist_ok=True, parents=True)
 
         project_name = cfg.logger.project
-        run_name = str(logger.name) if logger is not None else 'run'
+        run_name = str(logger.experiment.name) if logger is not None else 'run'
         safe_run_name = run_name.replace('/', '_').replace(':', '-')
 
         train_loss = trainer.callback_metrics.get('train/total_loss', torch.tensor(0.0))

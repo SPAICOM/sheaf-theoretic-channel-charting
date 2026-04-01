@@ -2,8 +2,8 @@ _target_: src.NeuralDiagSheafCC
 
 agents: null
 neighbors: null
-lmb_min: 1e-3
-lmb_max: 1.0
+lmb_min: 0
+lmb_max: 1e-1
 lmb_schedule: cosine
 lr: 1e-3
 weight_decay: 1e-3
