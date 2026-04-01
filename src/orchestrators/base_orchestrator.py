@@ -625,7 +625,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
             D_hat = torch.sqrt(D_hat)
 
             # Compute optimal scaling factor
-            beta = torch.sum(D * D_hat) / torch.sum(D**2)
+            beta = torch.sum(D * D_hat) / torch.sum(D_hat**2)
 
             # Compute Kruskal stress
             KS[i] = torch.sqrt(torch.sum((D - beta * D_hat) ** 2) / torch.sum(D**2))

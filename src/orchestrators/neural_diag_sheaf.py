@@ -303,7 +303,8 @@ class NeuralDiagSheafCC(BaseOrchestrator):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
-
+            i, j = tuple(sorted((bs1_str, bs2_str)))
+            
             # Accumulate embeddings over the full shared dataset
             embs_1, embs_2 = [], []
             for H_1, H_2, _ in loader:
@@ -316,9 +317,8 @@ class NeuralDiagSheafCC(BaseOrchestrator):
             Z_j = torch.cat(embs_2, dim=0)
 
             # Perform edge alignment using learned diagonal layers
-            j = bs2_str
-            Z_i_hat = self.diagonal_layers[f'{i}_{j}'][str(i)](Z_i)
-            Z_j_hat = self.diagonal_layers[f'{i}_{j}'][str(j)](Z_j)
+            Z_i_hat = self.diagonal_layers[f'{i}_{j}'][bs1_str](Z_i)
+            Z_j_hat = self.diagonal_layers[f'{i}_{j}'][bs2_str](Z_j)
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
             # Point-wise FOSCTTM: for each point, measure fraction of neighbors
@@ -327,9 +327,10 @@ class NeuralDiagSheafCC(BaseOrchestrator):
                 d = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat[p, :])
 
                 # Distance from point p in j to all points in i
-                Ds_1 = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat)
+                Ds_1 = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat, dim=1)
+
                 # Distance from point p in i to all points in j
-                Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat)
+                Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat, dim=1)
 
                 # Fraction of points correctly identified as closer than the true match
                 edge_FOSCTTM[p] = 0.5 * (

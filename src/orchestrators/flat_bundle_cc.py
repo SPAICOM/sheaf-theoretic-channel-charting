@@ -291,9 +291,8 @@ class FlatBundleCC(BaseOrchestrator):
 
         return private_outputs, total_loss
 
-    def _compute_FOSCTTM(self) -> torch.Tensor:
+    def _compute_FOSCTTM(self, split: str = 'train') -> torch.Tensor:
         """Compute FOSCTTM (Fraction Of Successive Correct Triplet Matches) metric.
-
         Evaluates the quality of alignment by measuring how often the nearest neighbor
         in the aligned embedding space correctly matches the ground truth correspondence.
 
@@ -302,10 +301,14 @@ class FlatBundleCC(BaseOrchestrator):
         torch.Tensor
             Mean FOSCTTM score across all edges.
         """
-        test_shared_dataset = self.trainer.datamodule.test_shared_dataset
+        shared_dataset = (
+            self.trainer.datamodule.train_shared_dataset
+            if split == 'train'
+            else self.trainer.datamodule.test_shared_dataset
+        )
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
-        for i, dataset in enumerate(test_shared_dataset.values()):
+        for i, dataset in enumerate(shared_dataset.values()):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
@@ -333,9 +336,10 @@ class FlatBundleCC(BaseOrchestrator):
                 d = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat[p, :])
 
                 # Distance from point p in j to all points in i
-                Ds_1 = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat)
+                Ds_1 = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat, dim=1)
+
                 # Distance from point p in i to all points in j
-                Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat)
+                Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat, dim=1)
 
                 # Fraction of points correctly identified as closer than the true match
                 edge_FOSCTTM[p] = 0.5 * (

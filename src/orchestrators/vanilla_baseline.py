@@ -74,6 +74,15 @@ class VanillaCC(BaseOrchestrator):
             steepness=steepness,
             n_clusters=n_clusters,
         )
+    
+        # Build edge list from neighbor graph (undirected, sorted tuples)
+        self.hparams['edges'] = list(
+            {
+                tuple(sorted((str(agent), str(neighbor))))
+                for agent in self.hparams['neighbors']
+                for neighbor in self.hparams['neighbors'][agent]
+            }
+        )
 
     def _shared_eval(
         self,
@@ -104,7 +113,23 @@ class VanillaCC(BaseOrchestrator):
         private_outputs = self(batch)
         on_step = prefix == 'train'
 
+        # Compute embeddings of the overlapping areas between base stations
+        shared_outputs = {
+            (i, j): {
+                i: self.agents[i](
+                    batch[(int(i), int(j))][0],
+                    triplet_mode=False,
+                ),
+                j: self.agents[j](
+                    batch[(int(i), int(j))][1],
+                    triplet_mode=False,
+                ),
+            }
+            for (i, j) in self.hparams['edges']
+        }
+
         total_private_loss = 0
+        total_alignment_loss = 0
 
         # Compute loss for each agent independently
         for idx, agent in self.agents.items():
@@ -147,8 +172,27 @@ class VanillaCC(BaseOrchestrator):
             prog_bar=True,
         )
 
-        # No alignment loss in vanilla baseline - total loss is just private loss
-        total_loss = total_private_loss
+        for i, j in self.hparams['edges']:
+
+            # Transport loss: mean squared distance after affine transformation
+            transport_loss = (torch.linalg.norm(shared_outputs[(i, j)][i] - shared_outputs[(i, j)][j], dim=1) ** 2).mean()
+
+            total_alignment_loss += transport_loss
+
+        # Total loss = private loss + lambda * transport loss
+        total_loss = total_private_loss + self._lmb * total_alignment_loss
+
+        self.log_dict(
+            {
+                f'{prefix}/total_private_loss': total_private_loss,
+                f'{prefix}/total_alignment_loss': total_alignment_loss,
+                f'{prefix}/total_loss': total_loss,
+            },
+            on_step=on_step,
+            on_epoch=True,
+            batch_size=batch_size,
+            prog_bar=True,
+        )
 
         return private_outputs, total_loss
 
@@ -169,8 +213,70 @@ class VanillaCC(BaseOrchestrator):
             n_clusters=self.hparams.n_clusters,
         )
 
-    def _compute_FOSCTTM(self) -> None:
-        pass
+    def _compute_FOSCTTM(self, split: str = 'train') -> torch.Tensor:
+        """Compute FOSCTTM (Fraction Of Successive Correct Triplet Matches) metric.
+
+        Evaluates the quality of alignment by measuring how often the nearest neighbor
+        in the aligned embedding space correctly matches the ground truth correspondence.
+
+        Parameters
+        ----------
+        split : str, optional
+            Which dataset split to use ('train' or 'test'). Default: 'train'.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean FOSCTTM score across all edges.
+        """
+        shared_dataset = (
+            self.trainer.datamodule.train_shared_dataset
+            if split == 'train'
+            else self.trainer.datamodule.test_shared_dataset
+        )
+        FOSCTTM = torch.zeros(len(self.hparams['edges']))
+
+        for i, dataset in enumerate(shared_dataset.values()):
+            loader = DataLoader(dataset, batch_size=64, shuffle=False)
+            bs1_str = str(dataset.idx_bs_1)
+            bs2_str = str(dataset.idx_bs_2)
+            a, b = tuple(sorted((bs1_str, bs2_str)))
+
+            # Accumulate embeddings over the full shared dataset
+            embs_1, embs_2 = [], []
+            for H_1, H_2, _ in loader:
+                H_1, H_2 = H_1.to(self.device), H_2.to(self.device)
+                embs_1.append(self.agents[bs1_str](H_1, triplet_mode=False))
+                embs_2.append(self.agents[bs2_str](H_2, triplet_mode=False))
+
+            # Stack all embeddings: (N, d)
+            Z_i = torch.cat(embs_1, dim=0)
+            Z_j = torch.cat(embs_2, dim=0)
+
+            # Perform edge alignment using learned transport layers
+            Z_i_hat = Z_i
+            Z_j_hat = Z_j
+            edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
+
+            # Point-wise FOSCTTM: for each point, measure fraction of neighbors
+            # where the nearest neighbor correctly identifies the correspondence
+            for p in range(Z_j_hat.shape[0]):
+                d = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat[p, :])
+
+                # Distance from point p in j to all points in i
+                Ds_1 = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat, dim=1)
+
+                # Distance from point p in i to all points in j
+                Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat, dim=1)
+
+                # Fraction of points correctly identified as closer than the true match
+                edge_FOSCTTM[p] = 0.5 * (
+                    torch.sum(Ds_1 < d) / Z_j_hat.shape[0] + torch.sum(Ds_2 < d) / Z_j_hat.shape[0]
+                )
+
+            FOSCTTM[i] = torch.mean(edge_FOSCTTM)
+
+        return torch.mean(FOSCTTM)
 
 
 if __name__ == '__main__':

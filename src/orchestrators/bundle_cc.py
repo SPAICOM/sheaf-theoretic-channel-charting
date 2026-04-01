@@ -300,6 +300,15 @@ class BundleCC(BaseOrchestrator):
         return private_outputs, total_loss
 
     def _compute_FOSCTTM(self, split: str = 'train') -> torch.Tensor:
+        """Compute FOSCTTM (Fraction Of Successive Correct Triplet Matches) metric.
+        Evaluates the quality of alignment by measuring how often the nearest neighbor
+        in the aligned embedding space correctly matches the ground truth correspondence.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean FOSCTTM score across all edges.
+        """
         shared_dataset = (
             self.trainer.datamodule.train_shared_dataset
             if split == 'train'

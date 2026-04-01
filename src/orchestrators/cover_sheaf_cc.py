@@ -281,7 +281,7 @@ class CoverSheafCC(BaseOrchestrator):
                 d = torch.linalg.norm(Z_j_hat[p, :] - Z_i[p, :])
 
                 # Distance from point p in j to all points in i
-                Ds = torch.linalg.norm(Z_j_hat[p, :] - Z_i)
+                Ds = torch.linalg.norm(Z_j_hat[p, :] - Z_i, dim=1)
 
                 # Fraction of points correctly identified as closer than the true match
                 edge_FOSCTTM[p] = torch.sum(Ds < d) / Z_j_hat.shape[0]
