@@ -73,6 +73,10 @@ single *args:
     # Single-agent Channel Charting - runs single agent directly
     uv run scripts/single_agent_simulation.py {{args}}
 
+# Evaluate all orchestrators and save metrics to results/eval_metrics.parquet
+eval *args:
+    uv run scripts/eval.py {{args}}
+
 # Run all orchestrators (alphabetically ordered)
 sim-all *args:
     just sim bundle {{args}}

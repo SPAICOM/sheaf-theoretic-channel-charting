@@ -19,6 +19,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.datamodules.dichasus import DICHASUSDataModule
 from src.utils import remove_non_empty_dir
+from scripts.util import save_checkpoint
 
 
 @hydra.main(
@@ -195,28 +196,7 @@ def main(cfg: DictConfig) -> None:
     #                  Save Model
     # ===================================================
     if cfg.get('save_model', False):
-        CHECKPOINTS_PATH = CURRENT / 'checkpoints/'
-        CHECKPOINTS_PATH.mkdir(exist_ok=True, parents=True)
-
-        project_name = cfg.logger.project
-        run_name = str(logger.experiment.name) if logger is not None else 'run'
-        safe_run_name = run_name.replace('/', '_').replace(':', '-')
-
-        train_loss = trainer.callback_metrics.get('train/total_loss', torch.tensor(0.0))
-        if hasattr(train_loss, 'item'):
-            train_loss = train_loss.item()
-
-        max_epochs = cfg.trainer.max_epochs
-
-        ckpt_name = (
-            f'{project_name}_{safe_run_name}'
-            f'_loss{train_loss:.4f}'
-            f'_epochs{max_epochs}'
-            f'_folds{num_folds}.pt'
-        )
-        ckpt_path = CHECKPOINTS_PATH / ckpt_name
-        torch.save(orchestrator, ckpt_path)
-        print(f'Model saved to {ckpt_path}')
+        save_checkpoint(orchestrator, cfg, trainer, logger, num_folds, base=CURRENT)
 
     # Cleaning the working space
     remove_non_empty_dir('./multirun/')

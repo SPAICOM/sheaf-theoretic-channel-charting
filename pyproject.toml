@@ -34,6 +34,7 @@ dependencies = [
     "tqdm>=4.66",
     "wandb>=0.16",
     "tfrecord[torch]>=1.14",
+    "polars>=1.39.3",
 ]
 
 [dependency-groups]

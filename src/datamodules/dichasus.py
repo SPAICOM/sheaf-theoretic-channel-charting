@@ -542,6 +542,7 @@ class DICHASUSDataModule(l.LightningDataModule):
         'n_neg': None,  # Max negatives per anchor (None = all)
         'preprocess': 'dichasus',
         'edge_set': [],  # Virtual BS index pairs for shared datasets
+        'full_cover': False,  # If True, skip spatial masking and use all points
         'train_split': 0.7,
         'val_split': 0.15,
         'test_split': 0.15,
@@ -1168,7 +1169,10 @@ class DICHASUSDataModule(l.LightningDataModule):
             spatial_group_idxs: dict[int, np.ndarray] | None = None
             shared_spatial_idxs_per_edge: dict[tuple[int, int], np.ndarray] | None = None
 
-            if self._is_two_group_case():
+            if self.cfg.get('full_cover', False):
+                pass  # Leave both masks as None → full feasible space for all cases
+
+            elif self._is_two_group_case():
                 sorted_positions = self._load_sorted_positions(self.file_stems)
                 rank_to_idxs = self._compute_spatial_clusters_3(sorted_positions)
                 virt_id_02 = next(
