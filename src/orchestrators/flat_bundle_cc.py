@@ -163,10 +163,9 @@ class FlatBundleCC(BaseOrchestrator):
                 Z_n = shared_embeddings[edge][neighbor_str]  # (N, d)
                 R_n = self.local_reference_frames[neighbor_str].to(self.device)
 
-                # Aggregate cross-covariance: Z_a^T @ (Z_n @ R_n^T)
-                # This measures correlation between agent a's embeddings and
-                # neighbor's embeddings transformed to neighbor's reference frame
-                cross_cov += Z_a.T @ (Z_n @ R_n.T)
+                # Aggregate cross-covariance: R_n @ Z_n^T @ Z_a
+                # Correct Procrustes target: polar_factor((Z_n @ R_n^T)^T @ Z_a)
+                cross_cov += R_n @ Z_n.T @ Z_a
 
             # Kabsch polar factor: find closest proper rotation to cross-covariance
             # U @ Sigma @ V^T where Sigma is adjusted to ensure det(R) = +1
@@ -326,8 +325,8 @@ class FlatBundleCC(BaseOrchestrator):
             Z_j = torch.cat(embs_2, dim=0)
 
             # Perform edge alignment using learned reference frames
-            Z_i_hat = Z_i @ self.local_reference_frames[edge[0]].to(self.device).T
-            Z_j_hat = Z_j @ self.local_reference_frames[edge[1]].to(self.device).T
+            Z_i_hat = Z_i @ self.local_reference_frames[bs1_str].to(self.device).T
+            Z_j_hat = Z_j @ self.local_reference_frames[bs2_str].to(self.device).T
             edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
 
             # Point-wise FOSCTTM: for each point, measure fraction of neighbors
