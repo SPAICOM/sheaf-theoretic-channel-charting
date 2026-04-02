@@ -187,16 +187,16 @@ def main(cfg: DictConfig) -> None:
         # Train on this fold
         trainer.fit(orchestrator, datamodule=datamodule)
 
-    # -------------------------
-    # Test (on final fold)
-    # -------------------------
-    orchestrator.eval_all(K_max=10)
-
     # ===================================================
     #                  Save Model
     # ===================================================
     if cfg.get('save_model', False):
         save_checkpoint(orchestrator, cfg, trainer, logger, num_folds, base=CURRENT)
+
+    # -------------------------
+    # Test (on final fold)
+    # -------------------------
+    orchestrator.eval_all(K_max=10)
 
     # Cleaning the working space
     remove_non_empty_dir('./multirun/')

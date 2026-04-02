@@ -35,16 +35,16 @@ from src.datamodules.dichasus import DICHASUSDataModule
 
 # All orchestrator config names that may have a saved checkpoint
 ORCHESTRATOR_NAMES = [
-    'bundle',
-    'cover_sheaf',
-    'diag_sheaf',
-    'federated',
-    'flat_bundle',
-    'neural_diag_sheaf',
+    # 'bundle',
+    # 'cover_sheaf',
+    # 'diag_sheaf',
+    # 'federated',
+    # 'flat_bundle',
+    # 'neural_diag_sheaf',
     'optimal_transport',
-    'personalized_federated',
-    'single_agent',
-    'vanilla',
+    # 'personalized_federated',
+    # 'single_agent',
+    # 'vanilla',
 ]
 
 
