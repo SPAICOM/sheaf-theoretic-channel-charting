@@ -77,6 +77,14 @@ single *args:
 eval *args:
     uv run scripts/eval.py {{args}}
 
+# Visualize dataset trajectories
+plot *args:
+    uv run scripts/plot_data.py {{args}}
+
+# Visualize latent representations from saved eval results
+viz *args:
+    uv run scripts/visualize.py {{args}}
+
 # Run all orchestrators (alphabetically ordered)
 sim-all *args:
     just sim bundle {{args}}

@@ -147,6 +147,8 @@ class NeuralDiagSheafCC(BaseOrchestrator):
         schedule = self.hparams['lmb_schedule']
 
         match schedule:
+            case None:
+                return
             case 'linear':
                 self._lmb = lmb_min + (lmb_max - lmb_min) * t
             case 'exponential':
@@ -304,7 +306,7 @@ class NeuralDiagSheafCC(BaseOrchestrator):
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
             node_i, node_j = tuple(sorted((bs1_str, bs2_str)))
-            
+
             # Accumulate embeddings over the full shared dataset
             embs_1, embs_2 = [], []
             for H_1, H_2, _ in loader:

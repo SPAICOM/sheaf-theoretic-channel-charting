@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 from omegaconf import DictConfig
+from torch.utils.data import DataLoader
 
 
 def get_checkpoint_dir(cfg: DictConfig, base: Path = Path('.')) -> Path:
@@ -43,6 +44,77 @@ def get_checkpoint_dir(cfg: DictConfig, base: Path = Path('.')) -> Path:
         )
 
     return base / 'checkpoints' / subdir
+
+
+def get_results_dir(cfg: DictConfig, base: Path = Path('.')) -> Path:
+    """Return the per-run results directory based on dataset configuration.
+
+    Mirrors the subdirectory logic of :func:`get_checkpoint_dir` but rooted
+    under ``results/`` instead of ``checkpoints/``.
+
+    Parameters
+    ----------
+    cfg : DictConfig
+        Hydra configuration object.
+    base : Path, optional
+        Root directory. Defaults to CWD.
+
+    Returns
+    -------
+    Path
+        Results sub-directory path (not yet created).
+    """
+    n_agents = len(cfg.dataset.bs_aggregation)
+    full_cover = cfg.dataset.full_cover
+
+    if n_agents == 2:
+        subdir = '2_agents_full' if full_cover else '2_agents'
+    elif n_agents == 4:
+        subdir = '4_agents_full' if full_cover else '4_agents'
+    else:
+        raise ValueError(
+            f'Unsupported bs_aggregation length {n_agents}. Expected 2 or 4.'
+        )
+
+    return base / 'results' / subdir
+
+
+def save_orch_metrics(row: dict, orch_dir: Path) -> None:
+    """Persist a single-orchestrator metrics row to ``{orch_dir}/eval_metrics.parquet``.
+
+    Parameters
+    ----------
+    row : dict
+        Flat metrics dictionary (one row of the evaluation DataFrame).
+    orch_dir : Path
+        Per-orchestrator results directory (created if absent).
+    """
+    import polars as pl
+
+    orch_dir.mkdir(exist_ok=True, parents=True)
+    pl.DataFrame([row]).write_parquet(orch_dir / 'eval_metrics.parquet')
+
+
+def load_orch_metrics(orch_dir: Path) -> dict | None:
+    """Load a previously saved per-orchestrator metrics row, if it exists.
+
+    Parameters
+    ----------
+    orch_dir : Path
+        Per-orchestrator results directory.
+
+    Returns
+    -------
+    dict | None
+        The metrics row as a plain Python dict, or ``None`` if no saved
+        results are found in ``orch_dir``.
+    """
+    import polars as pl
+
+    metrics_path = orch_dir / 'eval_metrics.parquet'
+    if not metrics_path.exists():
+        return None
+    return pl.read_parquet(metrics_path).to_dicts()[0]
 
 
 def save_checkpoint(
@@ -275,3 +347,78 @@ def compute_eval_metrics(
         res['FOSCTTM'] = None
 
     return res
+
+
+@torch.no_grad()
+def save_latent_representations(
+    orchestrator,
+    datamodule,
+    orch_dir: Path,
+    batch_size: int = 256,
+) -> None:
+    """Save latent representations for all local and shared datasets.
+
+    For each agent, the full local-dataset embeddings and positions are saved.
+    For each edge (i, j) in the shared dataset, the embeddings produced by
+    agent i (from BS-i CSI) and agent j (from BS-j CSI) are saved.
+
+    Output files are written directly into ``orch_dir``:
+
+    * ``local_agent_{idx}.pt``  →  ``{'embs': Tensor(N, d), 'pos': Tensor(N, 2)}``
+    * ``shared_{i}_{j}.pt``     →  ``{'embs_i': Tensor(M, d), 'embs_j': Tensor(M, d)}``
+
+    Parameters
+    ----------
+    orchestrator :
+        Loaded orchestrator (``BaseOrchestrator`` subclass), already in eval mode.
+    datamodule :
+        Fully set-up ``DICHASUSDataModule`` (``setup('fit')`` already called).
+    orch_dir : Path
+        Per-orchestrator results directory (e.g.
+        ``Path('results/2_agents/optimal_transport')``). Created if absent.
+    batch_size : int
+        Batch size used when running the shared-dataset forward pass.
+    """
+    orch_dir.mkdir(exist_ok=True, parents=True)
+    orch_name = orch_dir.name
+
+    # Attach a minimal trainer stub so build_trajectory can reach the datamodule
+    orchestrator._trainer = _FakeTrainer(datamodule)
+    orchestrator.eval()
+
+    # ------------------------------------------------------------------
+    # Local representations — one file per agent
+    # ------------------------------------------------------------------
+    for agent_idx_str in orchestrator.agents:
+        agent_idx = int(agent_idx_str)
+        embs, pos, _, _ = orchestrator.build_trajectory(agent_idx=agent_idx, split='train')
+        out_path = orch_dir / f'local_agent_{agent_idx}.pt'
+        torch.save({'embs': embs.cpu(), 'pos': pos.cpu()}, out_path)
+        print(f'  [{orch_name}] local agent {agent_idx} → {out_path}  shape={tuple(embs.shape)}')
+
+    # ------------------------------------------------------------------
+    # Shared representations — one file per edge (i, j)
+    # ------------------------------------------------------------------
+    for (i, j), shared_ds in datamodule.train_shared_dataset.items():
+        agent_i = orchestrator.agents[str(i)]
+        agent_j = orchestrator.agents[str(j)]
+
+        loader = DataLoader(shared_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+
+        embs_i_list: list[torch.Tensor] = []
+        embs_j_list: list[torch.Tensor] = []
+
+        for H_1, H_2, _ in loader:
+            # agent.forward with triplet_mode=False encodes a raw tensor directly
+            embs_i_list.append(agent_i(H_1, triplet_mode=False).cpu())
+            embs_j_list.append(agent_j(H_2, triplet_mode=False).cpu())
+
+        embs_i = torch.cat(embs_i_list, dim=0)
+        embs_j = torch.cat(embs_j_list, dim=0)
+
+        out_path = orch_dir / f'shared_{i}_{j}.pt'
+        torch.save({'embs_i': embs_i, 'embs_j': embs_j}, out_path)
+        print(
+            f'  [{orch_name}] shared ({i},{j}) → {out_path}'
+            f'  shape={tuple(embs_i.shape)}'
+        )

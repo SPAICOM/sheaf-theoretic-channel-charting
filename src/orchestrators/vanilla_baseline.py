@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
+from torch.utils.data import DataLoader
+
 from src.orchestrators.base_orchestrator import BaseOrchestrator
 
 if TYPE_CHECKING:
-    import torch
     import torch.nn as nn
 
 
@@ -213,65 +215,44 @@ class VanillaCC(BaseOrchestrator):
             n_clusters=self.hparams.n_clusters,
         )
 
-    def _compute_FOSCTTM(self, split: str = 'train') -> torch.Tensor:
-        """Compute FOSCTTM (Fraction Of Successive Correct Triplet Matches) metric.
+    @torch.no_grad()
+    def _compute_FOSCTTM(self) -> torch.Tensor:
+        """Compute FOSCTTM as a baseline (no alignment applied).
 
-        Evaluates the quality of alignment by measuring how often the nearest neighbor
-        in the aligned embedding space correctly matches the ground truth correspondence.
-
-        Parameters
-        ----------
-        split : str, optional
-            Which dataset split to use ('train' or 'test'). Default: 'train'.
+        Since agents train independently, embeddings are compared directly
+        without any alignment transform. This gives the reference score
+        showing how misaligned uncoordinated agents are.
 
         Returns
         -------
         torch.Tensor
             Mean FOSCTTM score across all edges.
         """
-        shared_dataset = (
-            self.trainer.datamodule.train_shared_dataset
-            if split == 'train'
-            else self.trainer.datamodule.test_shared_dataset
-        )
+        shared_dataset = self.trainer.datamodule.train_shared_dataset
         FOSCTTM = torch.zeros(len(self.hparams['edges']))
 
         for i, dataset in enumerate(shared_dataset.values()):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
-            a, b = tuple(sorted((bs1_str, bs2_str)))
 
-            # Accumulate embeddings over the full shared dataset
             embs_1, embs_2 = [], []
             for H_1, H_2, _ in loader:
                 H_1, H_2 = H_1.to(self.device), H_2.to(self.device)
                 embs_1.append(self.agents[bs1_str](H_1, triplet_mode=False))
                 embs_2.append(self.agents[bs2_str](H_2, triplet_mode=False))
 
-            # Stack all embeddings: (N, d)
             Z_i = torch.cat(embs_1, dim=0)
             Z_j = torch.cat(embs_2, dim=0)
 
-            # Perform edge alignment using learned transport layers
-            Z_i_hat = Z_i
-            Z_j_hat = Z_j
-            edge_FOSCTTM = torch.zeros(Z_j_hat.shape[0])
-
-            # Point-wise FOSCTTM: for each point, measure fraction of neighbors
-            # where the nearest neighbor correctly identifies the correspondence
-            for p in range(Z_j_hat.shape[0]):
-                d = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat[p, :])
-
-                # Distance from point p in j to all points in i
-                Ds_1 = torch.linalg.norm(Z_j_hat[p, :] - Z_i_hat, dim=1)
-
-                # Distance from point p in i to all points in j
-                Ds_2 = torch.linalg.norm(Z_i_hat[p, :] - Z_j_hat, dim=1)
-
-                # Fraction of points correctly identified as closer than the true match
+            edge_FOSCTTM = torch.zeros(Z_j.shape[0])
+            for p in range(Z_j.shape[0]):
+                d = torch.linalg.norm(Z_j[p] - Z_i[p])
+                Ds_1 = torch.linalg.norm(Z_j[p] - Z_i, dim=1)
+                Ds_2 = torch.linalg.norm(Z_i[p] - Z_j, dim=1)
                 edge_FOSCTTM[p] = 0.5 * (
-                    torch.sum(Ds_1 < d) / Z_j_hat.shape[0] + torch.sum(Ds_2 < d) / Z_j_hat.shape[0]
+                    torch.sum(Ds_1 < d) / Z_j.shape[0]
+                    + torch.sum(Ds_2 < d) / Z_j.shape[0]
                 )
 
             FOSCTTM[i] = torch.mean(edge_FOSCTTM)
