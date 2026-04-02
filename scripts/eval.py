@@ -3,15 +3,23 @@
 Uses the same Hydra config as ``simulation.py``.  For each orchestrator type
 the script:
 
-1. Resolves the checkpoint directory from the dataset config (same logic used
-   when saving).
-2. Finds the checkpoint with the lowest encoded training loss.
-3. Loads the full orchestrator object and evaluates it on the *training*
-   dataset (the only split available for DICHASUS cf0x when ``test_split=0``).
+1. Resolves the per-run results directory from the dataset config (same subdir
+   logic used for checkpoints: 2_agents, 4_agents, etc.).
+2. If ``results/{subdir}/{orch_name}/eval_metrics.parquet`` already exists,
+   the orchestrator is **skipped** and its cached metrics + latent
+   representations are reused.
+3. Otherwise, finds the checkpoint with the lowest encoded training loss,
+   loads the full orchestrator, evaluates it on the training dataset, and
+   saves both metrics and latent representations to the per-orchestrator dir.
 4. Collects KS, CT@K, TW@K, and FOSCTTM metrics for every agent.
 
-All results are written to ``results/eval_metrics.parquet`` as a wide-format
-Polars DataFrame with one row per orchestrator and one column per metric.
+Per-orchestrator results are written to:
+    ``results/{subdir}/{orch_name}/eval_metrics.parquet``
+    ``results/{subdir}/{orch_name}/local_agent_{i}.pt``
+    ``results/{subdir}/{orch_name}/shared_{i}_{j}.pt``
+
+An aggregated summary across all orchestrators is also written to:
+    ``results/{subdir}/eval_metrics.parquet``
 """
 
 import sys
@@ -30,18 +38,22 @@ from scripts.util import (
     compute_loss_metrics,
     find_best_checkpoint,
     get_checkpoint_dir,
+    get_results_dir,
+    load_orch_metrics,
+    save_latent_representations,
+    save_orch_metrics,
 )
 from src.datamodules.dichasus import DICHASUSDataModule
 
 # All orchestrator config names that may have a saved checkpoint
 ORCHESTRATOR_NAMES = [
-    # 'bundle',
-    # 'cover_sheaf',
-    # 'diag_sheaf',
-    # 'federated',
-    # 'flat_bundle',
+    'bundle',
+    'cover_sheaf',
+    'diag_sheaf',
+    'federated',
+    'flat_bundle',
     # 'neural_diag_sheaf',
-    'optimal_transport',
+    # 'optimal_transport',
     # 'personalized_federated',
     # 'single_agent',
     # 'vanilla',
@@ -59,6 +71,19 @@ def main(cfg: DictConfig) -> None:
     CURRENT = Path('.')
 
     # ===================================================
+    #   Directories
+    # ===================================================
+    ckpt_dir = get_checkpoint_dir(cfg, CURRENT)
+    results_subdir = get_results_dir(cfg, CURRENT)   # e.g. results/2_agents
+    results_subdir.mkdir(exist_ok=True, parents=True)
+
+    project_name = cfg.logger.project
+
+    K_max: int = cfg.get('eval_K_max', 10)
+    K_min: int = cfg.get('eval_K_min', 2)
+    step: int = cfg.get('eval_K_step', 1)
+
+    # ===================================================
     #   DataModule — initialised once, shared across all
     #   orchestrators evaluated in this run
     # ===================================================
@@ -71,21 +96,27 @@ def main(cfg: DictConfig) -> None:
     datamodule.setup('fit')
 
     # ===================================================
-    #   Checkpoint directory (mirrors save_checkpoint logic)
-    # ===================================================
-    ckpt_dir = get_checkpoint_dir(cfg, CURRENT)
-    project_name = cfg.logger.project
-
-    K_max: int = cfg.get('eval_K_max', 10)
-    K_min: int = cfg.get('eval_K_min', 2)
-    step: int = cfg.get('eval_K_step', 1)
-
-    # ===================================================
     #   Evaluate each orchestrator
     # ===================================================
     records: list[dict] = []
 
     for orch_name in ORCHESTRATOR_NAMES:
+        orch_dir = results_subdir / orch_name
+
+        # --------------------------------------------------
+        # Cache hit: reuse existing per-orchestrator results
+        # --------------------------------------------------
+        cached_row = load_orch_metrics(orch_dir)
+        if cached_row is not None:
+            print(
+                f'\n[{orch_name}] Found existing results in {orch_dir} — skipping evaluation.'
+            )
+            records.append(cached_row)
+            continue
+
+        # --------------------------------------------------
+        # No cache: locate checkpoint
+        # --------------------------------------------------
         ckpt_path = find_best_checkpoint(ckpt_dir, project_name, orch_name)
         if ckpt_path is None:
             print(f'[{orch_name}] No checkpoint found in {ckpt_dir} — skipping.')
@@ -142,28 +173,37 @@ def main(cfg: DictConfig) -> None:
         # Global alignment metric
         row['FOSCTTM'] = float(metrics['FOSCTTM']) if metrics['FOSCTTM'] is not None else None
 
-        records.append(row)
         total_loss = loss_metrics.get('total_loss', float('nan'))
         print(
             f'[{orch_name}] total_loss={total_loss:.4f}  '
             f'KS={row["KS_mean"]:.4f}  FOSCTTM={row["FOSCTTM"]}'
         )
 
+        # --------------------------------------------------
+        # Persist per-orchestrator metrics and latent reps
+        # --------------------------------------------------
+        save_orch_metrics(row, orch_dir)
+
+        print(f'[{orch_name}] Saving latent representations…')
+        try:
+            save_latent_representations(orchestrator, datamodule, orch_dir)
+        except Exception as exc:
+            print(f'[{orch_name}] Latent representation saving failed: {exc}')
+
+        records.append(row)
+
     if not records:
         print('No orchestrators evaluated. Nothing to save.')
         return
 
     # ===================================================
-    #   Build Polars DataFrame and persist
+    #   Aggregated summary across all orchestrators
     # ===================================================
     df = pl.DataFrame(records)
+    agg_path = results_subdir / 'eval_metrics.parquet'
+    df.write_parquet(agg_path)
 
-    results_dir = CURRENT / 'results'
-    results_dir.mkdir(exist_ok=True, parents=True)
-    out_path = results_dir / 'eval_metrics.parquet'
-    df.write_parquet(out_path)
-
-    print(f'\nSaved evaluation metrics → {out_path}')
+    print(f'\nSaved aggregated metrics → {agg_path}')
     print(df)
 
 

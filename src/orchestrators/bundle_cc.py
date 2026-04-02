@@ -122,6 +122,8 @@ class BundleCC(BaseOrchestrator):
         schedule = self.hparams['lmb_schedule']
 
         match schedule:
+            case None:
+                return
             case 'linear':
                 self._lmb = lmb_min + (lmb_max - lmb_min) * t
             case 'exponential':
