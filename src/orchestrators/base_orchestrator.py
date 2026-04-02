@@ -578,7 +578,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
         return torch.mean(1 - F * penalties)
 
     def compute_kruskal_stress(
-        self, embs: torch.Tensor, pos: torch.Tensor, M: int = 1000, S: int = 1000
+        self, embs: torch.Tensor, pos: torch.Tensor, M: int = 1000, S: int = 1000, seed: int = 42
     ) -> torch.Tensor:
         """Compute Montecarlo-estimate of Kruskal stress metric.
 
@@ -595,6 +595,8 @@ class BaseOrchestrator(l.LightningModule, ABC):
             Number of sampled points
         S : int
             Number of samples trajectories
+        seed : int
+            RNG seed so the same subsamples are drawn across all agents/methods.
         Returns
         -------
         torch.Tensor
@@ -604,11 +606,16 @@ class BaseOrchestrator(l.LightningModule, ABC):
         KS = torch.zeros(S)
         N = pos.shape[0]
 
+        # Fix the generator so every call (across agents) draws identical subsamples
+        rng = torch.Generator()
+        rng.manual_seed(seed)
+
         for i in range(S):
             idxs = torch.randint(
                 low=0,
                 high=N,
                 size=(M,),
+                generator=rng,
             )
             pos_sub = pos[idxs, :]
             embs_sub = embs[idxs, :]
