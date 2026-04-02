@@ -987,13 +987,19 @@ class DICHASUSDataModule(l.LightningDataModule):
         rank_order = np.argsort(diag_scores)  # ascending
         return {rank: np.where(labels == int(cluster_id))[0] for rank, cluster_id in enumerate(rank_order)}
 
+    def _is_four_single_group_case(self) -> bool:
+        """Return True iff virtual_bs_groups == [[0],[1],[2],[3]] (each BS alone)."""
+        if len(self.virtual_bs_groups) != 4:
+            return False
+        return [sorted(g) for g in self.virtual_bs_groups] == [[0], [1], [2], [3]]
+
     def _build_split(
         self,
         stems: list[str],
         split_indices: dict[str, np.ndarray],
         rng: np.random.Generator,
         spatial_group_idxs: dict[int, np.ndarray] | None = None,
-        shared_spatial_idxs: np.ndarray | None = None,
+        shared_spatial_idxs_per_edge: dict[tuple[int, int], np.ndarray] | None = None,
     ) -> tuple[
         dict[int, LazyDICHASUSTrajectoryDataset],
         dict[tuple[int, int], LazyDICHASUSSharedDataset],
@@ -1014,9 +1020,10 @@ class DICHASUSDataModule(l.LightningDataModule):
         spatial_group_idxs : dict[int, np.ndarray] | None
             Optional mapping from virtual BS index to allowed global indices (spatial mask).
             When provided, each virtual BS's valid_idxs is intersected with its spatial mask.
-        shared_spatial_idxs : np.ndarray | None
-            Optional array of global indices allowed for shared datasets (spatial mask).
-            When provided, shared dataset indices are further restricted to this set.
+        shared_spatial_idxs_per_edge : dict[tuple[int, int], np.ndarray] | None
+            Optional per-edge spatial mask for shared datasets.
+            Keys are (v1, v2) virtual BS pairs; values are allowed global index arrays.
+            When an edge key is present, shared dataset indices are intersected with its mask.
 
         Returns
         -------
@@ -1074,8 +1081,10 @@ class DICHASUSDataModule(l.LightningDataModule):
 
         for v1, v2 in self.edge_set:
             effective_shared_idxs = train_anchor_idxs
-            if shared_spatial_idxs is not None:
-                effective_shared_idxs = np.intersect1d(train_anchor_idxs, shared_spatial_idxs)
+            if shared_spatial_idxs_per_edge is not None and (v1, v2) in shared_spatial_idxs_per_edge:
+                effective_shared_idxs = np.intersect1d(
+                    train_anchor_idxs, shared_spatial_idxs_per_edge[(v1, v2)]
+                )
             if len(effective_shared_idxs) == 0:
                 continue
 
@@ -1143,13 +1152,22 @@ class DICHASUSDataModule(l.LightningDataModule):
             val_indices = all_indices[n_train : n_train + n_val]
             test_indices = all_indices[n_train + n_val :]
 
-            # For the [[0,2],[1,3]] two-group configuration, compute 3-cluster spatial masks.
+            # Compute 3-cluster spatial masks for specific bs_aggregation configurations.
             # Rank 0 = upper-left arm, rank 1 = middle/corner, rank 2 = lower-right arm.
-            # Group [0,2] (virt_id=0): middle + lower-right (ranks 1+2)
-            # Group [1,3] (virt_id=1): upper-left + middle (ranks 0+1)
-            # Shared datasets: middle cluster only (rank 1)
+            #
+            # Case A – [[0,2],[1,3]]:
+            #   Group [0,2]: lower branch → ranks 1+2
+            #   Group [1,3]: upper branch → ranks 0+1
+            #   All shared edges: middle cluster only (rank 1)
+            #
+            # Case B – [[0],[1],[2],[3]]:
+            #   Groups 0 and 2 (physical BSs 0,2): upper branch → ranks 0+1
+            #   Groups 1 and 3 (physical BSs 1,3): lower branch → ranks 1+2
+            #   Same-arm edges (0↔2 and 1↔3): full private dataset of that arm
+            #   Cross-arm edges: middle cluster only (rank 1)
             spatial_group_idxs: dict[int, np.ndarray] | None = None
-            shared_spatial_idxs: np.ndarray | None = None
+            shared_spatial_idxs_per_edge: dict[tuple[int, int], np.ndarray] | None = None
+
             if self._is_two_group_case():
                 sorted_positions = self._load_sorted_positions(self.file_stems)
                 rank_to_idxs = self._compute_spatial_clusters_3(sorted_positions)
@@ -1163,7 +1181,35 @@ class DICHASUSDataModule(l.LightningDataModule):
                     virt_id_02: np.concatenate([rank_to_idxs[1], rank_to_idxs[2]]),
                     virt_id_13: np.concatenate([rank_to_idxs[0], rank_to_idxs[1]]),
                 }
-                shared_spatial_idxs = rank_to_idxs[1]
+                shared_spatial_idxs_per_edge = {
+                    (v1, v2): rank_to_idxs[1] for v1, v2 in self.edge_set
+                }
+
+            elif self._is_four_single_group_case():
+                sorted_positions = self._load_sorted_positions(self.file_stems)
+                rank_to_idxs = self._compute_spatial_clusters_3(sorted_positions)
+                upper_idxs = np.concatenate([rank_to_idxs[0], rank_to_idxs[1]])
+                lower_idxs = np.concatenate([rank_to_idxs[1], rank_to_idxs[2]])
+                middle_idxs = rank_to_idxs[1]
+                # Physical BS IDs that belong to the upper / lower arm
+                upper_phys = {0, 2}
+                lower_phys = {1, 3}
+                # Build per-group spatial masks (virt_id == phys_id for [[0],[1],[2],[3]])
+                spatial_group_idxs = {}
+                for virt_id, phys_ids in enumerate(self.virtual_bs_groups):
+                    phys = phys_ids[0]
+                    spatial_group_idxs[virt_id] = upper_idxs if phys in upper_phys else lower_idxs
+                # Build per-edge spatial masks
+                shared_spatial_idxs_per_edge = {}
+                for v1, v2 in self.edge_set:
+                    p1 = self.virtual_bs_groups[v1][0]
+                    p2 = self.virtual_bs_groups[v2][0]
+                    if p1 in upper_phys and p2 in upper_phys:
+                        shared_spatial_idxs_per_edge[(v1, v2)] = upper_idxs
+                    elif p1 in lower_phys and p2 in lower_phys:
+                        shared_spatial_idxs_per_edge[(v1, v2)] = lower_idxs
+                    else:
+                        shared_spatial_idxs_per_edge[(v1, v2)] = middle_idxs
 
             # Build datasets for each split
             # Note: Each split gets its own dataset with filtered valid_idxs
@@ -1177,7 +1223,7 @@ class DICHASUSDataModule(l.LightningDataModule):
                 {'train': train_indices},
                 triplet_rng,
                 spatial_group_idxs=spatial_group_idxs,
-                shared_spatial_idxs=shared_spatial_idxs,
+                shared_spatial_idxs_per_edge=shared_spatial_idxs_per_edge,
             )
 
             (
@@ -1189,7 +1235,7 @@ class DICHASUSDataModule(l.LightningDataModule):
                 {'train': val_indices},
                 triplet_rng,
                 spatial_group_idxs=spatial_group_idxs,
-                shared_spatial_idxs=shared_spatial_idxs,
+                shared_spatial_idxs_per_edge=shared_spatial_idxs_per_edge,
             )
 
             (
@@ -1201,7 +1247,7 @@ class DICHASUSDataModule(l.LightningDataModule):
                 {'train': test_indices},
                 triplet_rng,
                 spatial_group_idxs=spatial_group_idxs,
-                shared_spatial_idxs=shared_spatial_idxs,
+                shared_spatial_idxs_per_edge=shared_spatial_idxs_per_edge,
             )
 
         # Compute feature dimension from a sample
