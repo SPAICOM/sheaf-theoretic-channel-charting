@@ -10,13 +10,22 @@ sys.path.append(str(Path(sys.path[0]).parent))
 from collections import defaultdict
 
 import hydra
+import polars as pl
+from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 
 # import omegaconf
 from lightning import Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
 
-from scripts.util import save_checkpoint
+from scripts.util import (
+    compute_eval_metrics,
+    compute_loss_metrics,
+    get_results_dir,
+    save_checkpoint,
+    save_latent_representations,
+    save_orch_metrics,
+)
 from src.datamodules.dichasus import DICHASUSDataModule
 from src.utils import remove_non_empty_dir
 
@@ -192,10 +201,64 @@ def main(cfg: DictConfig) -> None:
     if cfg.get('save_model', False):
         save_checkpoint(orchestrator, cfg, trainer, logger, num_folds, base=CURRENT)
 
-    # -------------------------
-    # Test (on final fold)
-    # -------------------------
-    orchestrator.eval_all(K_max=10)
+    # ===================================================
+    #              Evaluate and Save Metrics
+    # ===================================================
+    K_max: int = cfg.get('eval_K_max', 40)
+    K_min: int = cfg.get('eval_K_min', 2)
+    step: int = cfg.get('eval_K_step', 4)
+
+    orch_name: str = HydraConfig.get().runtime.choices.get('orchestrator', 'unknown')
+    results_subdir = get_results_dir(cfg, CURRENT)
+    results_subdir.mkdir(exist_ok=True, parents=True)
+    orch_dir = results_subdir / orch_name
+
+    print(f'\n[{orch_name}] Computing losses on training data…')
+    loss_metrics = compute_loss_metrics(orchestrator, datamodule)
+
+    print(f'[{orch_name}] Computing topology metrics…')
+    metrics = compute_eval_metrics(
+        orchestrator,
+        datamodule,
+        K_max=K_max,
+        K_min=K_min,
+        step=step,
+    )
+
+    row: dict = {'orchestrator': orch_name}
+    row.update(loss_metrics)
+
+    for i, ks_val in enumerate(metrics['KS']):
+        row[f'KS_agent_{i}'] = float(ks_val)
+    row['KS_mean'] = float(sum(metrics['KS']) / len(metrics['KS'])) if metrics['KS'] else None
+
+    for K in range(K_min, K_max + 1, step):
+        ct_vals = metrics['CT'][K]
+        tw_vals = metrics['TW'][K]
+        row[f'CT_K{K}'] = float(sum(ct_vals) / len(ct_vals)) if ct_vals else None
+        row[f'TW_K{K}'] = float(sum(tw_vals) / len(tw_vals)) if tw_vals else None
+
+    row['FOSCTTM'] = float(metrics['FOSCTTM']) if metrics['FOSCTTM'] is not None else None
+
+    total_loss = loss_metrics.get('total_loss', float('nan'))
+    print(
+        f'[{orch_name}] total_loss={total_loss:.4f}  '
+        f'KS={row["KS_mean"]:.4f}  FOSCTTM={row["FOSCTTM"]}'
+    )
+
+    save_orch_metrics(row, orch_dir)
+
+    print(f'[{orch_name}] Saving latent representations…')
+    try:
+        save_latent_representations(orchestrator, datamodule, orch_dir)
+    except Exception as exc:
+        print(f'[{orch_name}] Latent representation saving failed: {exc}')
+
+    df = pl.DataFrame([row])
+    agg_path = results_subdir / 'eval_metrics.parquet'
+    df.write_parquet(agg_path)
+    print(f'\nSaved aggregated metrics → {agg_path}')
+    print(df)
 
     # Cleaning the working space
     remove_non_empty_dir('./multirun/')
