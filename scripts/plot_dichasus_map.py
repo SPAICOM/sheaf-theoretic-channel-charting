@@ -44,15 +44,16 @@ BS_POSITIONS = np.array([
     [-12.6844,  -4.4833],  # phys 3 → BS 4
 ])
 
-BS_COLORS  = ['#e6194b', '#3cb44b', '#4363d8', '#f58231']  # red, green, blue, orange
-BS_LABELS  = [f'BS {i + 1}' for i in range(4)]             # BS 1 … BS 4
+_tab10     = plt.cm.tab10.colors
+BS_COLORS  = [_tab10[0], _tab10[1], _tab10[2], _tab10[3]]  # blue, orange, green, red
+BS_LABELS  = [r'$b_{' + str(i + 1) + r'}$' for i in range(4)]  # b_1 … b_4
 
-# Annotation nudges (dx, dy) so labels don't overlap the marker
+# Annotation nudges in points (offset from marker centre)
 BS_ANNOTATION_OFFSET = [
-    ( 0.4,  0.6),   # BS 1
-    (-2.5,  0.6),   # BS 2
-    ( 0.4, -1.0),   # BS 3
-    ( 0.4,  0.6),   # BS 4
+    (  8,   8),   # b_1
+    (-28,  12),   # b_2  (left side)
+    ( 12, -18),   # b_3  (below)
+    (  8,   8),   # b_4
 ]
 
 # Coverage rank sets — mirrors DICHASUSDataModule four-single-group logic:
@@ -82,7 +83,7 @@ BUILDING_VERTICES = np.array([
 
 DATA_DIR   = Path('dichasus')
 FILE_STEMS = ['dichasus-cf02', 'dichasus-cf03', 'dichasus-cf04']
-OUT_PATH   = Path('results/dichasus_map.png')
+OUT_PATH   = Path('results/dichasus_map.pdf')
 
 # Density grid resolution and smoothing
 GRID_RES        = 300
@@ -226,7 +227,7 @@ def main() -> None:
     )
     ax.add_patch(building)
     ax.text(
-        BUILDING_CENTER[0], BUILDING_CENTER[1], 'scatterer',
+        BUILDING_CENTER[0], BUILDING_CENTER[1], 'Building',
         ha='center', va='center', fontsize=20,
         color='#333333', zorder=5,
     )
@@ -244,12 +245,12 @@ def main() -> None:
     ):
         ax.scatter(
             bs_pos[0], bs_pos[1],
-            s=250, color=color, marker='^',
-            edgecolors='black', linewidths=0.8, zorder=5,
+            s=350, color=color, marker='*',
+            edgecolors='black', linewidths=0.6, zorder=5,
         )
         ax.annotate(
             label, xy=bs_pos,
-            xytext=(bs_pos[0] + dx, bs_pos[1] + dy),
+            xytext=(dx, dy), textcoords='offset points',
             fontweight='bold', color='black', zorder=6,
         )
 
@@ -263,12 +264,8 @@ def main() -> None:
         mpatches.Patch(facecolor=c, edgecolor=c, alpha=0.55, label=f'{lbl} coverage')
         for c, lbl in zip(BS_COLORS, BS_LABELS)
     ]
-    building_handle = mpatches.Patch(
-        facecolor='#bbbbbb', edgecolor='#444444',
-        linestyle='--', linewidth=1.5, label='Building',
-    )
     ax.legend(
-        handles=[traj_handle] + bs_handles + [building_handle],
+        handles=[traj_handle] + bs_handles,
         loc='lower left',
     )
 

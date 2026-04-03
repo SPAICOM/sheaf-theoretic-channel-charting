@@ -55,6 +55,9 @@ from scripts.util import find_best_checkpoint, get_checkpoint_dir, get_results_d
 
 matplotlib.use('Agg')
 
+STYLE_PATH = Path(__file__).resolve().parents[1] / 'config/plotting/plt.mplstyle'
+plt.style.use(str(STYLE_PATH))
+
 # Orchestrators that share (or can be synced into) a single global latent space
 GROUP1_ORCHS = {'flat_bundle', 'federated', 'personalized_federated'}
 
@@ -211,26 +214,29 @@ def _plot_group1(
     """
     fig, (ax_pre, ax_post) = plt.subplots(1, 2, figsize=(16, 7))
 
+    if orch_name == 'flat_bundle':
+        titles = ('Private embeddings', 'Aligned embeddings')
+    else:
+        titles = ('Before alignment (raw)', 'After alignment')
+
     for idx, data in sorted(agent_data.items()):
         embs_raw = data['embs'].cpu()
         embs_aligned = _apply_reference_frame(orchestrator, orch_name, idx, embs_raw)
         color = AGENT_COLORS[idx % len(AGENT_COLORS)]
+        label = r'$b_{' + str(idx + 1) + r'}$'
 
-        _scatter(ax_pre, embs_raw, color, label=f'Agent {idx}')
-        _scatter(ax_post, embs_aligned, color, label=f'Agent {idx}')
+        _scatter(ax_pre, embs_raw, color, label=label)
+        _scatter(ax_post, embs_aligned, color, label=label)
 
-    for ax, title in [
-        (ax_pre, 'Before alignment (raw)'),
-        (ax_post, 'After alignment'),
-    ]:
-        ax.set_xlabel('Dim 1')
-        ax.set_ylabel('Dim 2')
+    for ax, title in zip((ax_pre, ax_post), titles):
+        ax.set_xlabel('')
+        ax.set_ylabel('')
         ax.set_aspect('equal', 'box')
         ax.legend(markerscale=3)
-        ax.set_title(title)
+        ax.set_title(title, pad=12)
 
-    fig.suptitle(f'{orch_name} — Combined Latent Space (all agents)', fontsize=13)
-    fig.tight_layout()
+    fig.tight_layout(pad=1.0, w_pad=0.3)
+    fig.subplots_adjust(wspace=-0.35)
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
@@ -265,29 +271,31 @@ def _plot_group2(
         embs_i = shared_data[edge]['embs_i'].cpu()
         embs_j = shared_data[edge]['embs_j'].cpu()
 
+        label_i = r'$b_{' + str(i_idx + 1) + r'}$'
+        label_j = r'$b_{' + str(j_idx + 1) + r'}$'
+
         # --- left: raw ---
         ax_pre = axes[row, 0]
-        _scatter(ax_pre, embs_i, color_i, f'Agent {i_idx}')
-        _scatter(ax_pre, embs_j, color_j, f'Agent {j_idx}')
-        ax_pre.set_title(f'Edge ({i_idx},{j_idx}) — before alignment')
-        ax_pre.set_xlabel('Dim 1')
-        ax_pre.set_ylabel('Dim 2')
+        _scatter(ax_pre, embs_i, color_i, label_i)
+        _scatter(ax_pre, embs_j, color_j, label_j)
+        ax_pre.set_title(f'Edge ({i_idx + 1},{j_idx + 1}) — before alignment')
+        ax_pre.set_xlabel('')
+        ax_pre.set_ylabel('')
         ax_pre.set_aspect('equal', 'box')
         ax_pre.legend(markerscale=3)
 
         # --- right: aligned ---
         ax_post = axes[row, 1]
         t_i, t_j = _apply_edge_map(orchestrator, orch_name, edge, embs_i, embs_j)
-        _scatter(ax_post, t_i, color_i, f'Agent {i_idx}')
-        _scatter(ax_post, t_j, color_j, f'Agent {j_idx}')
-        ax_post.set_title(f'Edge ({i_idx},{j_idx}) — after alignment')
-        ax_post.set_xlabel('Dim 1')
-        ax_post.set_ylabel('Dim 2')
+        _scatter(ax_post, t_i, color_i, label_i)
+        _scatter(ax_post, t_j, color_j, label_j)
+        ax_post.set_title(f'Edge ({i_idx + 1},{j_idx + 1}) — after alignment')
+        ax_post.set_xlabel('')
+        ax_post.set_ylabel('')
         ax_post.set_aspect('equal', 'box')
         ax_post.legend(markerscale=3)
 
-    fig.suptitle(f'{orch_name} — Shared Latent Spaces per Edge', fontsize=14, y=1.005)
-    fig.tight_layout()
+    fig.tight_layout(pad=1.0, h_pad=0.3, w_pad=0.3)
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
@@ -333,7 +341,7 @@ def main(cfg: DictConfig) -> None:
 
         # ---- visualize ----
         if orch_name in GROUP1_ORCHS:
-            out_path = orch_dir / 'latent_combined.png'
+            out_path = orch_dir / 'latent_combined.pdf'
             _plot_group1(orchestrator, orch_name, agent_data, out_path)
             print(f'[{orch_name}] Saved → {out_path}')
 
@@ -343,7 +351,7 @@ def main(cfg: DictConfig) -> None:
                 print(f'[{orch_name}] No shared_*.pt files found — skipping edge plots.')
                 continue
 
-            out_path = orch_dir / 'latent_edges.png'
+            out_path = orch_dir / 'latent_edges.pdf'
             _plot_group2(orchestrator, orch_name, shared_data, out_path)
             print(f'[{orch_name}] Saved → {out_path}')
 
