@@ -104,6 +104,5 @@ sheaf *args:
     just sim diag_sheaf {{args}}
 
 baselines *args:
-    just sim optimal_transport {{args}}
     just sim federated {{args}}
     just sim personalized_federated {{args}}

@@ -209,10 +209,13 @@ def find_best_checkpoint(
         Path to the best checkpoint, or ``None`` if no matching file is found.
     """
     loss_pattern = re.compile(r'_loss(\d+\.\d+)_')
-    prefix = f'{project_name}_{orchestrator_name}_'
+    # Accept both '{project}_{orch}_...' and '{project}_const_{orch}_...'
+    name_pattern = re.compile(
+        rf'^{re.escape(project_name)}_(?:const_)?{re.escape(orchestrator_name)}_'
+    )
     candidates: list[tuple[float, Path]] = []
     for p in ckpt_dir.glob('*.pt'):
-        if not p.stem.startswith(prefix):
+        if not name_pattern.match(p.stem):
             continue
         m = loss_pattern.search(p.name)
         if m:

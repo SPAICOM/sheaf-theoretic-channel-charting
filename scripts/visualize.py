@@ -300,6 +300,50 @@ def _plot_group2(
     plt.close(fig)
 
 
+def _plot_aligned_edges(
+    orchestrator,
+    orch_name: str,
+    shared_data: dict[tuple[str, str], dict],
+    out_path: Path,
+) -> None:
+    """2×3 grid of aligned latents — one panel per edge, after-alignment only.
+
+    Used for orchestrators where only the post-alignment view is needed
+    (e.g. ``optimal_transport``, ``bundle``).
+    """
+    edges = sorted(shared_data.keys())  # 6 edges for 4 agents
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10), squeeze=False)
+
+    for idx, edge in enumerate(edges):
+        row, col = divmod(idx, 3)
+        ax = axes[row, col]
+
+        i_str, j_str = edge
+        i_idx, j_idx = int(i_str), int(j_str)
+
+        embs_i = shared_data[edge]['embs_i'].cpu()
+        embs_j = shared_data[edge]['embs_j'].cpu()
+
+        t_i, t_j = _apply_edge_map(orchestrator, orch_name, edge, embs_i, embs_j)
+
+        label_i = r'$b_{' + str(i_idx + 1) + r'}$'
+        label_j = r'$b_{' + str(j_idx + 1) + r'}$'
+
+        _scatter(ax, t_i, AGENT_COLORS[i_idx % len(AGENT_COLORS)], label_i)
+        _scatter(ax, t_j, AGENT_COLORS[j_idx % len(AGENT_COLORS)], label_j)
+
+        ax.set_title(f'Edge $({i_idx + 1},{j_idx + 1})$', pad=8)
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        ax.set_aspect('equal', 'box')
+        ax.legend(markerscale=3)
+
+    fig.tight_layout(pad=1.0, h_pad=0.5, w_pad=0.3)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -352,7 +396,10 @@ def main(cfg: DictConfig) -> None:
                 continue
 
             out_path = orch_dir / 'latent_edges.pdf'
-            _plot_group2(orchestrator, orch_name, shared_data, out_path)
+            if orch_name in {'optimal_transport', 'bundle'}:
+                _plot_aligned_edges(orchestrator, orch_name, shared_data, out_path)
+            else:
+                _plot_group2(orchestrator, orch_name, shared_data, out_path)
             print(f'[{orch_name}] Saved → {out_path}')
 
 
