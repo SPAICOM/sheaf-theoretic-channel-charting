@@ -6,8 +6,6 @@ bundle approach, this restricts transformations to diagonal matrices (element-wi
 scaling), which can be solved in closed form.
 """
 
-import math
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -71,8 +69,12 @@ class DiagSheafCC(BaseOrchestrator):
             transition_epoch=transition_epoch,
             steepness=steepness,
             n_clusters=n_clusters,
+            lmb_min=lmb_min,
+            lmb_max=lmb_max,
+            lmb_schedule=lmb_schedule,
         )
         self._lmb = lmb_min
+        self.save_hyperparameters()
         self.hparams['lmb_log_barr'] = lmb_log_barr
 
         # Build edge list from neighbor graph (undirected, sorted tuples)
@@ -89,35 +91,6 @@ class DiagSheafCC(BaseOrchestrator):
         self.diagonal_maps: dict[tuple[str, str], torch.Tensor] = {
             edge: torch.eye(d, device=self.device) for edge in self.hparams['edges']
         }
-
-    def on_train_epoch_start(self) -> None:
-        """Update lmb according to the schedule at the start of each epoch.
-
-        Computes the alignment loss weight (lmb) based on the configured schedule
-        (linear, exponential, or cosine) and current epoch progress.
-        """
-        max_epochs = self.trainer.max_epochs
-        t = self.current_epoch / max(max_epochs - 1, 1)  # normalized progress [0, 1]
-
-        lmb_min = self.hparams['lmb_min']
-        lmb_max = self.hparams['lmb_max']
-        schedule = self.hparams['lmb_schedule']
-
-        match schedule:
-            case None:
-                return
-            case 'linear':
-                self._lmb = lmb_min + (lmb_max - lmb_min) * t
-            case 'exponential':
-                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
-            case 'cosine':
-                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
-            case _:
-                raise ValueError(
-                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
-                )
-
-        self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     @torch.no_grad()
     def on_train_epoch_end(self) -> None:

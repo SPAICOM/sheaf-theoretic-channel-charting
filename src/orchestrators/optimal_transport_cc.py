@@ -5,8 +5,6 @@ maintains learnable affine transformations (linear map + bias + scaling) that ar
 trained via gradient descent to align embeddings between neighboring base stations.
 """
 
-import math
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -113,9 +111,12 @@ class OptimalTransportCC(BaseOrchestrator):
             transition_epoch=transition_epoch,
             steepness=steepness,
             n_clusters=n_clusters,
+            lmb_min=lmb_min,
+            lmb_max=lmb_max,
+            lmb_schedule=lmb_schedule,
         )
-        self._lmb = lmb_min
         self.save_hyperparameters()
+        self._lmb = lmb_min
 
         # Build edge list from neighbor graph (undirected, sorted tuples)
         self.hparams['edges'] = list(
@@ -139,35 +140,6 @@ class OptimalTransportCC(BaseOrchestrator):
                 for (i, j) in self.hparams['edges']
             }
         )
-
-    def on_train_epoch_start(self) -> None:
-        """Update lmb according to the schedule at the start of each epoch.
-
-        Computes the alignment loss weight (lmb) based on the configured schedule
-        (linear, exponential, or cosine) and current epoch progress.
-        """
-        max_epochs = self.trainer.max_epochs
-        t = self.current_epoch / max(max_epochs - 1, 1)
-
-        lmb_min = self.hparams['lmb_min']
-        lmb_max = self.hparams['lmb_max']
-        schedule = self.hparams['lmb_schedule']
-
-        match schedule:
-            case None:
-                return
-            case 'linear':
-                self._lmb = lmb_min + (lmb_max - lmb_min) * t
-            case 'exponential':
-                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
-            case 'cosine':
-                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
-            case _:
-                raise ValueError(
-                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
-                )
-
-        self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_train_epoch_end(self) -> None:
         """Plot latent space at epoch end.

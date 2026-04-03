@@ -8,6 +8,11 @@ dataset:
   batch_size: 8192
   num_workers: 0
 
+orchestrator:
+  lmb_min: 1e-1
+  lmb_max: null
+  lmb_schedule: null
+
 logger:
   _target_: lightning.pytorch.loggers.WandbLogger
   project: sheaf_cc_night

@@ -36,8 +36,6 @@ from scipy.spatial import KDTree
 from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 
-# from torch.nn.parallel import parallel_apply
-
 
 class BaseOrchestrator(l.LightningModule, ABC):
     """Abstract base class for multi-agent orchestrators.
@@ -86,8 +84,13 @@ class BaseOrchestrator(l.LightningModule, ABC):
         transition_epoch: float | None = None,
         steepness: float = 0.1,
         n_clusters: int | None = None,
+        lmb_min: float = 1e-3,
+        lmb_max: float = 1.0,
+        lmb_schedule: str = 'cosine',
     ) -> None:
         super().__init__()
+        self._lmb = lmb_min
+
         # Save hyperparameters but exclude agent modules (they're tracked separately)
         self.save_hyperparameters(ignore=['agents'])
 
@@ -97,6 +100,42 @@ class BaseOrchestrator(l.LightningModule, ABC):
         # Store agents in a ModuleDict so Lightning can track their parameters
         # Convert integer keys to strings for compatibility with nn.ModuleDict
         self.agents = nn.ModuleDict({str(idx): agent for idx, agent in agents.items()})
+
+    def on_train_epoch_start(self) -> None:
+        """Update the alignment weight lambda according to the schedule.
+
+        Computes the normalized epoch progress t in [0, 1] and updates
+        ``self._lmb`` based on the configured schedule:
+        - linear: lmb_min + (lmb_max - lmb_min) * t
+        - exponential: lmb_min * (lmb_max / lmb_min) ^ t
+        - cosine: lmb_min + (lmb_max - lmb_min) * (1 - cos(pi * t)) / 2
+
+        Returns
+        -------
+        None
+        """
+        max_epochs = self.trainer.max_epochs
+        t = self.current_epoch / max(max_epochs - 1, 1)  # normalized progress [0, 1]
+
+        lmb_min = self.hparams['lmb_min']
+        lmb_max = self.hparams['lmb_max']
+        schedule = self.hparams['lmb_schedule']
+
+        match schedule:
+            case None:
+                return
+            case 'linear':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * t
+            case 'exponential':
+                self._lmb = lmb_min * (lmb_max / lmb_min) ** t
+            case 'cosine':
+                self._lmb = lmb_min + (lmb_max - lmb_min) * (1 - math.cos(math.pi * t)) / 2
+            case _:
+                raise ValueError(
+                    f"Unknown lmb_schedule: '{schedule}'. Choose from: linear, exponential, cosine."
+                )
+
+        self.log('train/lmb', self._lmb, on_step=False, on_epoch=True, prog_bar=True)
 
     @abstractmethod
     def on_train_epoch_end(self) -> None:
