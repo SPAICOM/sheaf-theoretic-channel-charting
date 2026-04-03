@@ -62,6 +62,9 @@ class FederatedCC(BaseOrchestrator):
         transition_epoch: float | None = None,
         steepness: float = 0.1,
         n_clusters: int | None = None,
+        lmb_min: float | None = None,
+        lmb_max: float | None = None,
+        lmb_schedule: float | None = None,
     ) -> None:
         super().__init__(
             agents=agents,
@@ -71,6 +74,9 @@ class FederatedCC(BaseOrchestrator):
             transition_epoch=transition_epoch,
             steepness=steepness,
             n_clusters=n_clusters,
+            lmb_min=lmb_min,
+            lmb_max=lmb_max,
+            lmb_schedule=lmb_schedule,
         )
 
         self._validate_agents_for_fedavg()
