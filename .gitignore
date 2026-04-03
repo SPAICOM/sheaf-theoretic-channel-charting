@@ -212,7 +212,7 @@ wandb/
 outputs/
 multirun/
 checkpoints/
-sheaf_cc/
+sheaf*/
 
 # Lightning
 lightning_logs/
@@ -227,6 +227,7 @@ data/*
 
 # Others
 img/
+results/
 
 *.png
 *.jpg
