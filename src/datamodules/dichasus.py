@@ -1162,8 +1162,10 @@ class DICHASUSDataModule(l.LightningDataModule):
             #   All shared edges: middle cluster only (rank 1)
             #
             # Case B – [[0],[1],[2],[3]]:
-            #   Groups 0 and 2 (physical BSs 0,2): upper branch → ranks 0+1
-            #   Groups 1 and 3 (physical BSs 1,3): lower branch → ranks 1+2
+            #   Groups 1 and 3 (physical BSs 1,3): upper branch → ranks 0+1
+            #     (BS 1 at (-11.25,-9.69) and BS 3 at (-12.68,-4.48) are upper-left)
+            #   Groups 0 and 2 (physical BSs 0,2): lower branch → ranks 1+2
+            #     (BS 0 at (2.67,-13.90) and BS 2 at (-1.53,-15.06) are lower-right)
             #   Same-arm edges (0↔2 and 1↔3): full private dataset of that arm
             #   Cross-arm edges: middle cluster only (rank 1)
             spatial_group_idxs: dict[int, np.ndarray] | None = None
@@ -1195,9 +1197,13 @@ class DICHASUSDataModule(l.LightningDataModule):
                 upper_idxs = np.concatenate([rank_to_idxs[0], rank_to_idxs[1]])
                 lower_idxs = np.concatenate([rank_to_idxs[1], rank_to_idxs[2]])
                 middle_idxs = rank_to_idxs[1]
-                # Physical BS IDs that belong to the upper / lower arm
-                upper_phys = {0, 2}
-                lower_phys = {1, 3}
+                # Physical BS IDs that belong to the upper / lower arm.
+                # BS 0 (Array 1, pos (2.67, -13.90)) and BS 2 (Array 3, pos (-1.53, -15.06))
+                # are both at the bottom of the hall → closest to the lower-right arm.
+                # BS 1 (Array 2, pos (-11.25, -9.69)) and BS 3 (Array 4, pos (-12.68, -4.48))
+                # are at the upper-left of the hall → closest to the upper-left arm.
+                upper_phys = {1, 3}
+                lower_phys = {0, 2}
                 # Build per-group spatial masks (virt_id == phys_id for [[0],[1],[2],[3]])
                 spatial_group_idxs = {}
                 for virt_id, phys_ids in enumerate(self.virtual_bs_groups):

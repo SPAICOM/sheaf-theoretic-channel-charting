@@ -160,6 +160,9 @@ def save_checkpoint(
 
     project_name = cfg.logger.project
     run_name = str(logger.experiment.name) if logger is not None else 'run'
+    lmb_schedule = cfg.orchestrator.get('lmb_schedule', None)
+    if lmb_schedule is None:
+        run_name = f'const_{run_name}'
     safe_run_name = run_name.replace('/', '_').replace(':', '-')
 
     train_loss = trainer.callback_metrics.get('train/total_loss', torch.tensor(0.0))

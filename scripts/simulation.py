@@ -48,8 +48,6 @@ def main(cfg: DictConfig) -> None:
     learning_rates = cfg.get('learning_rates', [cfg.get('lr', 1e-3)] * num_folds)
     separate_fold_runs = cfg.get('separate_fold_runs', False)
 
-    print('Niggeeeeeeeeeeeer', cfg.orchestrator.lmb_schedule)
-
     if len(learning_rates) != num_folds:
         raise ValueError(
             f'learning_rates length ({len(learning_rates)}) must match num_folds ({num_folds})'

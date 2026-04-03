@@ -96,3 +96,14 @@ sim-all *args:
     just sim optimal_transport {{args}}
     just sim personalized_federated {{args}}
     just sim vanilla {{args}}
+
+sheaf *args:
+    just sim flat_bundle {{args}}
+    just sim bundle {{args}}
+    just sim cover_sheaf {{args}}
+    just sim diag_sheaf {{args}}
+
+baselines *args:
+    just sim optimal_transport {{args}}
+    just sim federated {{args}}
+    just sim personalized_federated {{args}}

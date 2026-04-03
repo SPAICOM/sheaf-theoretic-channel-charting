@@ -123,7 +123,7 @@ class BaseOrchestrator(l.LightningModule, ABC):
 
         match schedule:
             case None:
-                return
+                pass
             case 'linear':
                 self._lmb = lmb_min + (lmb_max - lmb_min) * t
             case 'exponential':

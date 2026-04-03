@@ -9,13 +9,13 @@ dataset:
   num_workers: 0
 
 orchestrator:
-  lmb_min: 1e-1
-  lmb_max: null
-  lmb_schedule: null
+  lmb_min: 0
+  lmb_max: 1e-1
+  lmb_schedule: cosine
 
 logger:
   _target_: lightning.pytorch.loggers.WandbLogger
-  project: sheaf_cc_night
+  project: sheaf_cc_daylight
   name: ${hydra:runtime.choices.orchestrator}_${now:%Y-%m-%d}_${now:%H-%M-%S}
   log_model: false
 
