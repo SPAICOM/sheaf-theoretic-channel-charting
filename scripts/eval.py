@@ -47,13 +47,13 @@ from src.datamodules.dichasus import DICHASUSDataModule
 
 # All orchestrator config names that may have a saved checkpoint
 ORCHESTRATOR_NAMES = [
-    'bundle',
-    'cover_sheaf',
-    'diag_sheaf',
-    'federated',
-    'flat_bundle',
+    # 'bundle',
+    # 'cover_sheaf',
+    # 'diag_sheaf',
+    # 'federated',
+    # 'flat_bundle',
     # 'neural_diag_sheaf',
-    # 'optimal_transport',
+    'optimal_transport',
     # 'personalized_federated',
     # 'single_agent',
     # 'vanilla',
@@ -74,14 +74,14 @@ def main(cfg: DictConfig) -> None:
     #   Directories
     # ===================================================
     ckpt_dir = get_checkpoint_dir(cfg, CURRENT)
-    results_subdir = get_results_dir(cfg, CURRENT)   # e.g. results/2_agents
+    results_subdir = get_results_dir(cfg, CURRENT)  # e.g. results/2_agents
     results_subdir.mkdir(exist_ok=True, parents=True)
 
     project_name = cfg.logger.project
 
-    K_max: int = cfg.get('eval_K_max', 10)
+    K_max: int = cfg.get('eval_K_max', 40)
     K_min: int = cfg.get('eval_K_min', 2)
-    step: int = cfg.get('eval_K_step', 1)
+    step: int = cfg.get('eval_K_step', 4)
 
     # ===================================================
     #   DataModule — initialised once, shared across all
@@ -108,9 +108,7 @@ def main(cfg: DictConfig) -> None:
         # --------------------------------------------------
         cached_row = load_orch_metrics(orch_dir)
         if cached_row is not None:
-            print(
-                f'\n[{orch_name}] Found existing results in {orch_dir} — skipping evaluation.'
-            )
+            print(f'\n[{orch_name}] Found existing results in {orch_dir} — skipping evaluation.')
             records.append(cached_row)
             continue
 
@@ -159,9 +157,7 @@ def main(cfg: DictConfig) -> None:
         # Per-agent Kruskal stress
         for i, ks_val in enumerate(metrics['KS']):
             row[f'KS_agent_{i}'] = float(ks_val)
-        row['KS_mean'] = (
-            float(sum(metrics['KS']) / len(metrics['KS'])) if metrics['KS'] else None
-        )
+        row['KS_mean'] = float(sum(metrics['KS']) / len(metrics['KS'])) if metrics['KS'] else None
 
         # Per-K continuity and trustworthiness (mean across agents)
         for K in range(K_min, K_max + 1, step):

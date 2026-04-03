@@ -86,6 +86,7 @@ class BundleCC(BaseOrchestrator):
         )
         self._lmb = lmb_min
         self.save_hyperparameters()
+        print(self.hparams['lmb_schedule'])
 
         # Build edge list from neighbor graph (undirected)
         self.hparams['edges'] = list(

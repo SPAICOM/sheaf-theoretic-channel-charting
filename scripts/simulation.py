@@ -9,7 +9,6 @@ sys.path.append(str(Path(sys.path[0]).parent))
 
 from collections import defaultdict
 
-import torch
 import hydra
 from hydra.utils import instantiate
 
@@ -17,9 +16,9 @@ from hydra.utils import instantiate
 from lightning import Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
 
+from scripts.util import save_checkpoint
 from src.datamodules.dichasus import DICHASUSDataModule
 from src.utils import remove_non_empty_dir
-from scripts.util import save_checkpoint
 
 
 @hydra.main(
@@ -48,6 +47,8 @@ def main(cfg: DictConfig) -> None:
     triplet_seeds = cfg.get('triplet_seeds', list(range(num_folds)))
     learning_rates = cfg.get('learning_rates', [cfg.get('lr', 1e-3)] * num_folds)
     separate_fold_runs = cfg.get('separate_fold_runs', False)
+
+    print('Niggeeeeeeeeeeeer', cfg.orchestrator.lmb_schedule)
 
     if len(learning_rates) != num_folds:
         raise ValueError(
@@ -122,9 +123,7 @@ def main(cfg: DictConfig) -> None:
         lmb_max_global = float(cfg.orchestrator.get('lmb_max', 1.0))
         external_lambdas = [
             lmb_min_global
-            + (lmb_max_global - lmb_min_global)
-            * (1 - math.cos(math.pi * i / num_folds))
-            / 2
+            + (lmb_max_global - lmb_min_global) * (1 - math.cos(math.pi * i / num_folds)) / 2
             for i in range(num_folds + 1)
         ]
     else:
@@ -139,7 +138,9 @@ def main(cfg: DictConfig) -> None:
         print(f'  triplet_seed: {triplet_seeds[fold_idx]}')
         print(f'  learning_rate: {learning_rates[fold_idx]}')
         if external_lambdas is not None:
-            print(f'  lmb_range: [{external_lambdas[fold_idx]:.4f}, {external_lambdas[fold_idx + 1]:.4f}]')
+            print(
+                f'  lmb_range: [{external_lambdas[fold_idx]:.4f}, {external_lambdas[fold_idx + 1]:.4f}]'
+            )
         print(f'{"=" * 50}\n')
 
         # Set learning rate for this fold
