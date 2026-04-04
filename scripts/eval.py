@@ -159,12 +159,15 @@ def main(cfg: DictConfig) -> None:
             row[f'KS_agent_{i}'] = float(ks_val)
         row['KS_mean'] = float(sum(metrics['KS']) / len(metrics['KS'])) if metrics['KS'] else None
 
-        # Per-K continuity and trustworthiness (mean across agents)
+        # Per-K continuity and trustworthiness (mean + per-agent values)
         for K in range(K_min, K_max + 1, step):
             ct_vals = metrics['CT'][K]
             tw_vals = metrics['TW'][K]
             row[f'CT_K{K}'] = float(sum(ct_vals) / len(ct_vals)) if ct_vals else None
             row[f'TW_K{K}'] = float(sum(tw_vals) / len(tw_vals)) if tw_vals else None
+            for i, (ct_i, tw_i) in enumerate(zip(ct_vals, tw_vals)):
+                row[f'CT_K{K}_agent_{i}'] = float(ct_i)
+                row[f'TW_K{K}_agent_{i}'] = float(tw_i)
 
         # Global alignment metric
         row['FOSCTTM'] = float(metrics['FOSCTTM']) if metrics['FOSCTTM'] is not None else None

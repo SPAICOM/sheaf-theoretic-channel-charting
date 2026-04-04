@@ -85,6 +85,10 @@ plot *args:
 viz *args:
     uv run scripts/visualize.py {{args}}
 
+# Plot results table (FOSCTTM, KS) and CT/TW vs K line plots
+results *args:
+    uv run scripts/plot_results.py {{args}}
+
 # Run all orchestrators (alphabetically ordered)
 sim-all *args:
     just sim bundle {{args}}
