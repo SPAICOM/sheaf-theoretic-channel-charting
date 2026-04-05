@@ -174,20 +174,10 @@ class VanillaCC(BaseOrchestrator):
             prog_bar=True,
         )
 
-        for i, j in self.hparams['edges']:
-
-            # Transport loss: mean squared distance after affine transformation
-            transport_loss = (torch.linalg.norm(shared_outputs[(i, j)][i] - shared_outputs[(i, j)][j], dim=1) ** 2).mean()
-
-            total_alignment_loss += transport_loss
-
-        # Total loss = private loss + lambda * transport loss
-        total_loss = total_private_loss + self._lmb * total_alignment_loss
-
+        total_loss = total_private_loss
         self.log_dict(
             {
                 f'{prefix}/total_private_loss': total_private_loss,
-                f'{prefix}/total_alignment_loss': total_alignment_loss,
                 f'{prefix}/total_loss': total_loss,
             },
             on_step=on_step,

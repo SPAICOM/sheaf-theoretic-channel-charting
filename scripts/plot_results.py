@@ -23,6 +23,7 @@ METHOD_LABELS = {
     'federated': 'Federated',
     'personalized_federated': 'Pers. Federated',
     'optimal_transport': 'Optimal Transport',
+    'vanilla': 'Vanilla',
 }
 
 EXCLUDE_METHODS = {'diag_sheaf'}
@@ -198,7 +199,13 @@ def plot_ct_metric(df: pd.DataFrame, out_path: Path):
         ax=ax,
     )
 
-    ax.legend(framealpha=0.8)
+    ax.legend(
+        framealpha=0.8,
+        ncol=3,
+        loc='lower center',
+        bbox_to_anchor=(0.5, 1.02),
+        fontsize='small',
+    )
     ax.set_xlabel(r'$K$')
     ax.set_ylabel(r'Continuity (CT)')
     ax.set_title(None)
