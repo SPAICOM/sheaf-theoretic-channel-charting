@@ -89,24 +89,22 @@ viz *args:
 results *args:
     uv run scripts/plot_results.py {{args}}
 
-# Run all orchestrators (alphabetically ordered)
-sim-all *args:
-    just sim bundle {{args}}
-    just sim cover_sheaf {{args}}
-    just sim diag_sheaf {{args}}
-    just sim federated {{args}}
-    just sim flat_bundle {{args}}
-    just sim neural_diag_sheaf {{args}}
-    just sim optimal_transport {{args}}
-    just sim personalized_federated {{args}}
-    just sim vanilla {{args}}
-
+# Run all the proposed sheaf-based orchestrators
 sheaf *args:
     just sim flat_bundle {{args}}
     just sim bundle {{args}}
     just sim cover_sheaf {{args}}
     just sim diag_sheaf {{args}}
+    just sim neural_diag_sheaf {{args}}
 
+# Run all the baselines
 baselines *args:
     just sim federated {{args}}
     just sim personalized_federated {{args}}
+    just sim optimal_transport {{args}}
+    just sim vanilla {{args}}
+
+# Run all orchestrators (alphabetically ordered)
+sim-all *args:
+    just sheaf {{args}}
+    just baselines {{args}}
