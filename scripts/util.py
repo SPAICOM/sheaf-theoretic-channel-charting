@@ -39,9 +39,7 @@ def get_checkpoint_dir(cfg: DictConfig, base: Path = Path('.')) -> Path:
     elif n_agents == 4:
         subdir = '4_agents_full' if full_cover else '4_agents'
     else:
-        raise ValueError(
-            f'Unsupported bs_aggregation length {n_agents}. Expected 2 or 4.'
-        )
+        raise ValueError(f'Unsupported bs_aggregation length {n_agents}. Expected 2 or 4.')
 
     return base / 'checkpoints' / subdir
 
@@ -72,9 +70,7 @@ def get_results_dir(cfg: DictConfig, base: Path = Path('.')) -> Path:
     elif n_agents == 4:
         subdir = '4_agents_full' if full_cover else '4_agents'
     else:
-        raise ValueError(
-            f'Unsupported bs_aggregation length {n_agents}. Expected 2 or 4.'
-        )
+        raise ValueError(f'Unsupported bs_aggregation length {n_agents}. Expected 2 or 4.')
 
     return base / 'results' / subdir
 
@@ -331,9 +327,7 @@ def compute_eval_metrics(
             agent_idx=int(agent_idx),
             split='train',
         )
-        res['KS'].append(
-            orchestrator.compute_kruskal_stress(embs=embs, pos=pos).item()
-        )
+        res['KS'].append(orchestrator.compute_kruskal_stress(embs=embs, pos=pos).item())
         for K in range(K_min, K_max + 1, step):
             res['CT'][K].append(
                 orchestrator.compute_continuity(
@@ -424,7 +418,4 @@ def save_latent_representations(
 
         out_path = orch_dir / f'shared_{i}_{j}.pt'
         torch.save({'embs_i': embs_i, 'embs_j': embs_j}, out_path)
-        print(
-            f'  [{orch_name}] shared ({i},{j}) → {out_path}'
-            f'  shape={tuple(embs_i.shape)}'
-        )
+        print(f'  [{orch_name}] shared ({i},{j}) → {out_path}  shape={tuple(embs_i.shape)}')

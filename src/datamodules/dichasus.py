@@ -960,9 +960,7 @@ class DICHASUSDataModule(l.LightningDataModule):
         sort_idx = np.argsort(np.concatenate(all_times))
         return positions[sort_idx]
 
-    def _compute_spatial_clusters_3(
-        self, positions: np.ndarray
-    ) -> dict[int, np.ndarray]:
+    def _compute_spatial_clusters_3(self, positions: np.ndarray) -> dict[int, np.ndarray]:
         """Run k-means (k=3) on 2-D positions and return rank-indexed index arrays.
 
         Clusters are ranked by the diagonal projection ``x - 0.852*y``:
@@ -986,7 +984,10 @@ class DICHASUSDataModule(l.LightningDataModule):
         # Rank by diagonal projection of centroid: low = upper-left, high = lower-right
         diag_scores = centroids[:, 0] - 0.852 * centroids[:, 1]
         rank_order = np.argsort(diag_scores)  # ascending
-        return {rank: np.where(labels == int(cluster_id))[0] for rank, cluster_id in enumerate(rank_order)}
+        return {
+            rank: np.where(labels == int(cluster_id))[0]
+            for rank, cluster_id in enumerate(rank_order)
+        }
 
     def _is_four_single_group_case(self) -> bool:
         """Return True iff virtual_bs_groups == [[0],[1],[2],[3]] (each BS alone)."""
@@ -1082,7 +1083,10 @@ class DICHASUSDataModule(l.LightningDataModule):
 
         for v1, v2 in self.edge_set:
             effective_shared_idxs = train_anchor_idxs
-            if shared_spatial_idxs_per_edge is not None and (v1, v2) in shared_spatial_idxs_per_edge:
+            if (
+                shared_spatial_idxs_per_edge is not None
+                and (v1, v2) in shared_spatial_idxs_per_edge
+            ):
                 effective_shared_idxs = np.intersect1d(
                     train_anchor_idxs, shared_spatial_idxs_per_edge[(v1, v2)]
                 )
@@ -1187,9 +1191,7 @@ class DICHASUSDataModule(l.LightningDataModule):
                     virt_id_02: np.concatenate([rank_to_idxs[1], rank_to_idxs[2]]),
                     virt_id_13: np.concatenate([rank_to_idxs[0], rank_to_idxs[1]]),
                 }
-                shared_spatial_idxs_per_edge = {
-                    (v1, v2): rank_to_idxs[1] for v1, v2 in self.edge_set
-                }
+                shared_spatial_idxs_per_edge = dict.fromkeys(self.edge_set, rank_to_idxs[1])
 
             elif self._is_four_single_group_case():
                 sorted_positions = self._load_sorted_positions(self.file_stems)

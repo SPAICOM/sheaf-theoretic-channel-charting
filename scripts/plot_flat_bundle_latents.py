@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.colors import Normalize
-from matplotlib.cm import ScalarMappable
 from scipy.cluster.vq import kmeans2
 from scipy.ndimage import gaussian_filter
 

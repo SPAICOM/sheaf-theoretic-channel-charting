@@ -285,8 +285,6 @@ class FlatBundleCC(BaseOrchestrator):
             loader = DataLoader(dataset, batch_size=64, shuffle=False)
             bs1_str = str(dataset.idx_bs_1)
             bs2_str = str(dataset.idx_bs_2)
-            edge = tuple(sorted((bs1_str, bs2_str)))
-
             # Accumulate embeddings over the full shared dataset
             embs_1, embs_2 = [], []
             for H_1, H_2, _ in loader:

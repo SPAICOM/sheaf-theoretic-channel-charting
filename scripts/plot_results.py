@@ -105,7 +105,7 @@ def make_latex_table(df: pd.DataFrame) -> str:
     # Metric config: (df_column, display_header, lower_is_better)
     metrics = [
         ('KS_mean', r'KS $\downarrow$', True),
-        ('TW_K10',  r'TW$(K\!=\!10)$ $\uparrow$', False),
+        ('TW_K10', r'TW$(K\!=\!10)$ $\uparrow$', False),
         ('FOSCTTM', r'FOSCTTM $\downarrow$', True),
     ]
 
@@ -114,7 +114,11 @@ def make_latex_table(df: pd.DataFrame) -> str:
     rank_colours = ['best', 'second', 'third']
     for col, _, lower_is_better in metrics:
         series = df.set_index('method')[col].apply(
-            lambda v: float(v) if v is not None and not pd.isna(float(v) if v is not None else float('nan')) else float('nan')
+            lambda v: (
+                float(v)
+                if v is not None and not pd.isna(float(v) if v is not None else float('nan'))
+                else float('nan')
+            )
         )
         ranked = series.dropna().sort_values(ascending=lower_is_better)
         for rank, method in enumerate(ranked.index[:3]):
@@ -125,7 +129,8 @@ def make_latex_table(df: pd.DataFrame) -> str:
     def _agent_std(row, pat: str) -> str:
         """Compute std over columns matching pat; return formatted string or empty."""
         vals = [
-            float(v) for k, v in row.items()
+            float(v)
+            for k, v in row.items()
             if _re.match(pat, str(k)) and v is not None and not pd.isna(float(v))
         ]
         if len(vals) < 2:
@@ -162,8 +167,8 @@ def make_latex_table(df: pd.DataFrame) -> str:
     ]
     for _, row in df.iterrows():
         method = row['method']
-        ks   = cell(method, 'KS_mean', row)
-        tw10 = cell(method, 'TW_K10',  row)
+        ks = cell(method, 'KS_mean', row)
+        tw10 = cell(method, 'TW_K10', row)
         fosc = cell(method, 'FOSCTTM', row)
         lines.append(rf'    {method} & {ks} & {tw10} & {fosc} \\')
     lines += [

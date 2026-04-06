@@ -46,7 +46,6 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 import hydra
 import matplotlib
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 from lightning import seed_everything
 from omegaconf import DictConfig
@@ -83,6 +82,7 @@ AGENT_COLORS = plt.cm.tab10.colors
 # I/O helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_local_data(orch_dir: Path) -> dict[int, dict]:
     """Return ``{agent_idx: {'embs': Tensor, 'pos': Tensor}}`` from saved files."""
     result: dict[int, dict] = {}
@@ -96,7 +96,7 @@ def _load_shared_data(orch_dir: Path) -> dict[tuple[str, str], dict]:
     """Return ``{(i_str, j_str): {'embs_i': Tensor, 'embs_j': Tensor}}``."""
     result: dict[tuple[str, str], dict] = {}
     for f in sorted(orch_dir.glob('shared_*.pt')):
-        parts = f.stem.split('_')   # 'shared_i_j' → ['shared', 'i', 'j']
+        parts = f.stem.split('_')  # 'shared_i_j' → ['shared', 'i', 'j']
         edge = (parts[1], parts[2])
         result[edge] = torch.load(f, map_location='cpu', weights_only=False)
     return result
@@ -105,6 +105,7 @@ def _load_shared_data(orch_dir: Path) -> dict[tuple[str, str], dict]:
 # ---------------------------------------------------------------------------
 # Alignment helpers
 # ---------------------------------------------------------------------------
+
 
 @torch.no_grad()
 def _apply_edge_map(
@@ -181,24 +182,31 @@ def _apply_reference_frame(
     if orch_name == 'flat_bundle':
         R = orchestrator.local_reference_frames[str(idx)].cpu()
         return embs @ R.T
-    return embs   # federated / personalized_federated
+    return embs  # federated / personalized_federated
 
 
 # ---------------------------------------------------------------------------
 # Scatter helper
 # ---------------------------------------------------------------------------
 
+
 def _scatter(ax, embs: torch.Tensor, color, label: str) -> None:
     embs_np = embs.detach().cpu().numpy()
     ax.scatter(
-        embs_np[:, 0], embs_np[:, 1],
-        s=5, alpha=0.5, color=color, label=label, rasterized=True,
+        embs_np[:, 0],
+        embs_np[:, 1],
+        s=5,
+        alpha=0.5,
+        color=color,
+        label=label,
+        rasterized=True,
     )
 
 
 # ---------------------------------------------------------------------------
 # Plot functions
 # ---------------------------------------------------------------------------
+
 
 def _plot_group1(
     orchestrator,
@@ -257,7 +265,8 @@ def _plot_group2(
     n_edges = len(edges)
 
     fig, axes = plt.subplots(
-        n_edges, 2,
+        n_edges,
+        2,
         figsize=(12, 6 * n_edges),
         squeeze=False,
     )
@@ -347,6 +356,7 @@ def _plot_aligned_edges(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 @hydra.main(
     config_path='../config/hydra/',

@@ -37,23 +37,25 @@ plt.style.use(str(STYLE_PATH))
 
 # Physical BS positions (x, y) in metres — DICHASUS cf0x antenna array centres.
 # Array i+1  ↔  physical BS id i  ↔  displayed label "BS i+1".
-BS_POSITIONS = np.array([
-    [ 2.6747, -13.8973],   # phys 0 → BS 1
-    [-11.2503,  -9.6890],  # phys 1 → BS 2
-    [ -1.5314, -15.0595],  # phys 2 → BS 3
-    [-12.6844,  -4.4833],  # phys 3 → BS 4
-])
+BS_POSITIONS = np.array(
+    [
+        [2.6747, -13.8973],  # phys 0 → BS 1
+        [-11.2503, -9.6890],  # phys 1 → BS 2
+        [-1.5314, -15.0595],  # phys 2 → BS 3
+        [-12.6844, -4.4833],  # phys 3 → BS 4
+    ]
+)
 
-_tab10     = plt.cm.tab10.colors
-BS_COLORS  = [_tab10[0], _tab10[1], _tab10[2], _tab10[3]]  # blue, orange, green, red
-BS_LABELS  = [r'$b_{' + str(i + 1) + r'}$' for i in range(4)]  # b_1 … b_4
+_tab10 = plt.cm.tab10.colors
+BS_COLORS = [_tab10[0], _tab10[1], _tab10[2], _tab10[3]]  # blue, orange, green, red
+BS_LABELS = [r'$b_{' + str(i + 1) + r'}$' for i in range(4)]  # b_1 … b_4
 
 # Annotation nudges in points (offset from marker centre)
 BS_ANNOTATION_OFFSET = [
-    (  8,   8),   # b_1
-    (-28,  12),   # b_2  (left side)
-    ( 12, -18),   # b_3  (below)
-    (  8,   8),   # b_4
+    (8, 8),  # b_1
+    (-28, 12),  # b_2  (left side)
+    (12, -18),  # b_3  (below)
+    (8, 8),  # b_4
 ]
 
 # Coverage rank sets — mirrors DICHASUSDataModule four-single-group logic:
@@ -62,40 +64,49 @@ BS_ANNOTATION_OFFSET = [
 #   upper_phys = {1, 3}  (BS 2, BS 4 — upper-left of the hall)
 #       → ranks 0 + 1  (upper-left arm + middle)
 BS_COVERAGE_RANKS = {
-    0: [1, 2],   # BS 1 (phys 0, lower-right) — lower branch
-    1: [0, 1],   # BS 2 (phys 1, upper-left)  — upper branch
-    2: [1, 2],   # BS 3 (phys 2, lower)        — lower branch
-    3: [0, 1],   # BS 4 (phys 3, upper-left)   — upper branch
+    0: [1, 2],  # BS 1 (phys 0, lower-right) — lower branch
+    1: [0, 1],  # BS 2 (phys 1, upper-left)  — upper branch
+    2: [1, 2],  # BS 3 (phys 2, lower)        — lower branch
+    3: [0, 1],  # BS 4 (phys 3, upper-left)   — upper branch
 }
 
 # Building polygon — rectangular obstacle in the inner corner of the L-shape,
 # slightly rotated and enlarged horizontally to hug the trajectory boundary.
 # The region x < -5, y < -10 has zero trajectory points → clean empty space.
-_bc = np.array([-7.5, -11.5])          # building centre
-_bw, _bh = 3.9, 1.85                   # half-width / half-height in metres
-_theta = np.radians(15)                 # CCW rotation
-_R = np.array([[np.cos(_theta), -np.sin(_theta)],
-               [np.sin(_theta),  np.cos(_theta)]])
-BUILDING_CENTER   = _bc
-BUILDING_VERTICES = np.array([
-    [-_bw, -_bh], [_bw, -_bh], [_bw, _bh], [-_bw, _bh],
-]) @ _R.T + _bc
+_bc = np.array([-7.5, -11.5])  # building centre
+_bw, _bh = 3.9, 1.85  # half-width / half-height in metres
+_theta = np.radians(15)  # CCW rotation
+_R = np.array([[np.cos(_theta), -np.sin(_theta)], [np.sin(_theta), np.cos(_theta)]])
+BUILDING_CENTER = _bc
+BUILDING_VERTICES = (
+    np.array(
+        [
+            [-_bw, -_bh],
+            [_bw, -_bh],
+            [_bw, _bh],
+            [-_bw, _bh],
+        ]
+    )
+    @ _R.T
+    + _bc
+)
 
-DATA_DIR   = Path('dichasus')
+DATA_DIR = Path('dichasus')
 FILE_STEMS = ['dichasus-cf02', 'dichasus-cf03', 'dichasus-cf04']
-OUT_PATH   = Path('results/dichasus_map.pdf')
+OUT_PATH = Path('results/dichasus_map.pdf')
 
 # Density grid resolution and smoothing
-GRID_RES        = 300
-SMOOTH_SIGMA    = 11    # Gaussian sigma in grid cells for main density
-NOISE_SIGMA     = 30    # sigma for the low-frequency perturbation field
+GRID_RES = 300
+SMOOTH_SIGMA = 11  # Gaussian sigma in grid cells for main density
+NOISE_SIGMA = 30  # sigma for the low-frequency perturbation field
 NOISE_AMPLITUDE = 0.07  # fraction of peak density added as per-BS noise
-CONTOUR_THRESH  = 0.10  # density fraction below which coverage is not shown
+CONTOUR_THRESH = 0.10  # density fraction below which coverage is not shown
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def load_trajectories(stems: list[str]) -> np.ndarray:
     parts = []
@@ -110,9 +121,7 @@ def load_trajectories(stems: list[str]) -> np.ndarray:
 
 def compute_point_ranks(pos: np.ndarray) -> np.ndarray:
     """K-means (k=3) exactly as in DICHASUSDataModule._compute_spatial_clusters_3."""
-    centroids, labels = kmeans2(
-        pos.astype(np.float32), 3, seed=42, iter=50, minit='points'
-    )
+    centroids, labels = kmeans2(pos.astype(np.float32), 3, seed=42, iter=50, minit='points')
     diag_scores = centroids[:, 0] - 0.852 * centroids[:, 1]
     rank_order = np.argsort(diag_scores)
     rank_of_cluster = np.empty(3, dtype=int)
@@ -145,7 +154,7 @@ def _bridge_density(
     t = np.clip(v @ seg_dir, 0.0, seg_len)
     closest = bs_pos + np.outer(t, seg_dir)
     dist = np.linalg.norm(np.column_stack([gx, gy]) - closest, axis=1)
-    tube = amplitude * np.exp(-dist**2 / (2.0 * (sigma_tube_m / cell_m)**2 * cell_m**2))
+    tube = amplitude * np.exp(-(dist**2) / (2.0 * (sigma_tube_m / cell_m) ** 2 * cell_m**2))
     return tube.reshape(xg.shape)
 
 
@@ -179,6 +188,7 @@ def coverage_density(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     pos_all = load_trajectories(FILE_STEMS)
     print(f'Loaded {len(pos_all):,} UE positions from {len(FILE_STEMS)} files.')
@@ -209,34 +219,58 @@ def main() -> None:
         density = coverage_density(bs_pts, BS_POSITIONS[phys_id], xg, yg, rng)
 
         ax.contourf(
-            xg, yg, density,
+            xg,
+            yg,
+            density,
             levels=[CONTOUR_THRESH, density.max()],
-            colors=[color], alpha=0.18, zorder=1,
+            colors=[color],
+            alpha=0.18,
+            zorder=1,
         )
         ax.contour(
-            xg, yg, density,
+            xg,
+            yg,
+            density,
             levels=[CONTOUR_THRESH],
-            colors=[color], alpha=0.55, linewidths=1.1, zorder=2,
+            colors=[color],
+            alpha=0.55,
+            linewidths=1.1,
+            zorder=2,
         )
 
     # --- 2. Building polygon -------------------------------------------------
     building = mpatches.Polygon(
-        BUILDING_VERTICES, closed=True,
-        facecolor='#bbbbbb', edgecolor='#444444',
-        linestyle='--', linewidth=1.5, alpha=0.35, zorder=4,
+        BUILDING_VERTICES,
+        closed=True,
+        facecolor='#bbbbbb',
+        edgecolor='#444444',
+        linestyle='--',
+        linewidth=1.5,
+        alpha=0.35,
+        zorder=4,
     )
     ax.add_patch(building)
     ax.text(
-        BUILDING_CENTER[0], BUILDING_CENTER[1], 'Building',
-        ha='center', va='center', fontsize=20,
-        color='#333333', zorder=5,
+        BUILDING_CENTER[0],
+        BUILDING_CENTER[1],
+        'Building',
+        ha='center',
+        va='center',
+        fontsize=20,
+        color='#333333',
+        zorder=5,
     )
 
     # --- 3. UE trajectories --------------------------------------------------
     ax.scatter(
-        pos_all[:, 0], pos_all[:, 1],
-        s=1.2, color='#333333', alpha=0.28,
-        rasterized=True, zorder=3, label='UE trajectory',
+        pos_all[:, 0],
+        pos_all[:, 1],
+        s=1.2,
+        color='#333333',
+        alpha=0.28,
+        rasterized=True,
+        zorder=3,
+        label='UE trajectory',
     )
 
     # --- 4. Base station markers ---------------------------------------------
@@ -244,20 +278,33 @@ def main() -> None:
         zip(BS_POSITIONS, BS_COLORS, BS_LABELS, BS_ANNOTATION_OFFSET)
     ):
         ax.scatter(
-            bs_pos[0], bs_pos[1],
-            s=350, color=color, marker='*',
-            edgecolors='black', linewidths=0.6, zorder=5,
+            bs_pos[0],
+            bs_pos[1],
+            s=350,
+            color=color,
+            marker='*',
+            edgecolors='black',
+            linewidths=0.6,
+            zorder=5,
         )
         ax.annotate(
-            label, xy=bs_pos,
-            xytext=(dx, dy), textcoords='offset points',
-            fontweight='bold', color='black', zorder=6,
+            label,
+            xy=bs_pos,
+            xytext=(dx, dy),
+            textcoords='offset points',
+            fontweight='bold',
+            color='black',
+            zorder=6,
         )
 
     # --- 5. Legend -----------------------------------------------------------
     traj_handle = mlines.Line2D(
-        [], [], linestyle='-', linewidth=1.5,
-        color='#333333', alpha=0.6,
+        [],
+        [],
+        linestyle='-',
+        linewidth=1.5,
+        color='#333333',
+        alpha=0.6,
         label='UE trajectory',
     )
     bs_handles = [

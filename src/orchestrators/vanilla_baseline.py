@@ -76,7 +76,7 @@ class VanillaCC(BaseOrchestrator):
             steepness=steepness,
             n_clusters=n_clusters,
         )
-    
+
         # Build edge list from neighbor graph (undirected, sorted tuples)
         self.hparams['edges'] = list(
             {
@@ -115,23 +115,7 @@ class VanillaCC(BaseOrchestrator):
         private_outputs = self(batch)
         on_step = prefix == 'train'
 
-        # Compute embeddings of the overlapping areas between base stations
-        shared_outputs = {
-            (i, j): {
-                i: self.agents[i](
-                    batch[(int(i), int(j))][0],
-                    triplet_mode=False,
-                ),
-                j: self.agents[j](
-                    batch[(int(i), int(j))][1],
-                    triplet_mode=False,
-                ),
-            }
-            for (i, j) in self.hparams['edges']
-        }
-
         total_private_loss = 0
-        total_alignment_loss = 0
 
         # Compute loss for each agent independently
         for idx, agent in self.agents.items():
@@ -241,8 +225,7 @@ class VanillaCC(BaseOrchestrator):
                 Ds_1 = torch.linalg.norm(Z_j[p] - Z_i, dim=1)
                 Ds_2 = torch.linalg.norm(Z_i[p] - Z_j, dim=1)
                 edge_FOSCTTM[p] = 0.5 * (
-                    torch.sum(Ds_1 < d) / Z_j.shape[0]
-                    + torch.sum(Ds_2 < d) / Z_j.shape[0]
+                    torch.sum(Ds_1 < d) / Z_j.shape[0] + torch.sum(Ds_2 < d) / Z_j.shape[0]
                 )
 
             FOSCTTM[i] = torch.mean(edge_FOSCTTM)

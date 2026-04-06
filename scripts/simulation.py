@@ -145,9 +145,8 @@ def main(cfg: DictConfig) -> None:
         print(f'  triplet_seed: {triplet_seeds[fold_idx]}')
         print(f'  learning_rate: {learning_rates[fold_idx]}')
         if external_lambdas is not None:
-            print(
-                f'  lmb_range: [{external_lambdas[fold_idx]:.4f}, {external_lambdas[fold_idx + 1]:.4f}]'
-            )
+            lmb = external_lambdas
+            print(f'  lmb_range: [{lmb[fold_idx]:.4f}, {lmb[fold_idx + 1]:.4f}]')
         print(f'{"=" * 50}\n')
 
         # Set learning rate for this fold
