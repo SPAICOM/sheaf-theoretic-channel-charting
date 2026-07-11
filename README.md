@@ -3,7 +3,7 @@
 <h5 align="center">
      
 [![ieee](https://img.shields.io/static/v1?label=IEEE+Paper&message=ID-HERE&color=0057b7&logo=ieee)](https://ieeexplore.ieee.org/document/ID-HERE)
-[![arXiv](https://img.shields.io/badge/Arxiv-ID.HERE-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/CODE.HERE)
+[![arXiv](https://img.shields.io/badge/Arxiv-2607.03480-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2607.03480)
 [![License](https://img.shields.io/badge/Code%20License-MIT-yellow)](https://github.com/SPAICOM/sheaf-theoretic-channel-charting/blob/main/LICENSE)
 
  <br>
@@ -125,6 +125,15 @@ After the command completes, the development environment will be ready to use. ð
 If you find this code useful for your research, please consider citing the following paper:
 
 ```
+@misc{grimaldi2026sheaftheoreticframeworkdistributedmultisite,
+      title={A Sheaf-Theoretic Framework for Distributed Multi-Site Channel Charting}, 
+      author={Enrico Grimaldi and Leonardo Di Nino and Mario Edoardo Pandolfo and Gabriele D'Acunto and Sergio Barbarossa and Paolo Di Lorenzo},
+      year={2026},
+      eprint={2607.03480},
+      archivePrefix={arXiv},
+      primaryClass={eess.SP},
+      url={https://arxiv.org/abs/2607.03480}, 
+}
 ```
 
 ## Authors
